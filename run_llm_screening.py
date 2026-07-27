@@ -1,4 +1,19 @@
-from pathlib import Path
+#!/usr/bin/env python3
+"""DEPRECATED: Use `puf screen` from the CLI instead.
+
+This script is retained for backward compatibility only.
+It will be removed in a future release.
+See cli/screen.py for the replacement.
+"""
+
+import warnings
+warnings.warn(
+    "run_llm_screening.py is deprecated. Use 'puf screen' from the CLI.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# ... rest of original code ...
 from typing import Any
 
 import openai

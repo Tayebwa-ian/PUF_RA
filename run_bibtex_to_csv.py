@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+"""DEPRECATED: Use `puf import bibtex` from the CLI instead.
+
+This script is retained for backward compatibility only.
+It will be removed in a future release.
+See cli/import.py for the replacement.
+"""
+
+import warnings
+warnings.warn(
+    "run_bibtex_to_csv.py is deprecated. Use 'puf import bibtex' from the CLI.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# ... rest of original code ...
 """
 bibtex_to_csv.py — Parse BibTeX files and export entries to a CSV.
 

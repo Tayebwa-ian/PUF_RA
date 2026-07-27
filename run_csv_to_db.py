@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+"""DEPRECATED: Use `puf import csv` from the CLI instead.
+
+This script is retained for backward compatibility only.
+It will be removed in a future release.
+See cli/import.py for the replacement.
+"""
+
+import warnings
+warnings.warn(
+    "run_csv_to_db.py is deprecated. Use 'puf import csv' from the CLI.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# ... rest of original code ...
 """Import papers from a CSV file into the `papers` SQLite table.
 
 The CSV layout is selected with `--format`. Currently supported:

@@ -1,0 +1,21 @@
+[project]
+name = "puf-ra-pipeline"
+version = "2.0.0"
+description = "Systematic literature review pipeline for physical attacks on PUFs"
+requires-python = ">=3.10"
+authors = [
+    { name = "PUF Research Team" }
+]
+dependencies = [
+    "textual>=0.44.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+puf = "cli.import:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
