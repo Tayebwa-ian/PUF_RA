@@ -87,3 +87,71 @@ References are deduplicated by:
 - Semantic Scholar may not have all papers, especially older or less-cited ones; the unauthenticated pool is often rate limited, in which case the run stops gracefully with `aborted: 1`.
 - Reference metadata quality varies; Crossref references frequently carry only an unstructured string (skipped) and few abstracts.
 - Rate limits slow large-scale snowballing; combine `--delay` with repeated bounded runs (`--max-api-calls`), which resume automatically.
+
+## Two-phase, local-first redesign (research-backed)
+
+The snowball subsystem was redesigned for scientific rigor and rate-limit
+resilience. It is implemented in `src/reference_store.py` and `src/zotero_sync.py`
+alongside the legacy `src.snowball.run_snowball` (still available via the classic
+CLI flags).
+
+### Principle: local-first
+
+Every seed paper is checked against **OUR OWN database** before any external API
+is contacted. A reference that already exists in `papers` is linked immediately
+(no network call), and only the genuinely-unknown references are resolved
+externally.
+
+### Phase 1 — harvest (inventory)
+
+`harvest_references(conn, seed_paper_ids, direction, source, ...)`:
+
+1. For each seed, fetch its **complete** reference list from the source:
+   - backward + crossref: `GET /works/{DOI}` → `message.reference[]`
+   - backward + openalex: `GET /works?filter=doi:{DOI}` → `referenced_works` IDs,
+     batch-resolved
+   - forward + openalex: `GET /works?filter=cites:{openalex_id}` (citing works)
+   - backward + s2: `s2_get_references`
+2. **Store every reference** in the `reference_lists` table (inventory
+   completeness) — including references not yet in our DB — even those with no
+   DOI (unstructured only). A per-parent expression-unique index prevents
+   duplicate inventory rows.
+3. Resolve already-known references locally (creates `snowball_edges`).
+4. Batch-resolve the remaining DOI-bearing references (Crossref per-DOI polite
+   lookups, or OpenAlex `filter=doi:...|...`), inserting `papers`, linking
+   `snowball_edges`, and capturing Open-Access PDF links into `papers.pdf_url`.
+
+### Phase 2 — resolve (later / bulk)
+
+`resolve_reference_lists(conn, source, ...)` second phase takes **every**
+unresolved `reference_lists` row that carries a DOI and bulk-resolves it. This
+implements "store the list, then resolve later / bulk-download": a budget-limited
+harvest can stop at any point and a later `--resolve-only` run continues,
+idempotently, picking up where it left off.
+
+### Directions, sources, batching
+
+- `--direction {backward,forward,both}` — forward snowball (who cited our papers)
+  is supported via OpenAlex `cites:`. `--both` runs backward then forward.
+- `--source {crossref,openalex,s2}` — Crossref (backward) and OpenAlex
+  (backward + forward) are batch-friendly; S2 is backward-only.
+- `--harvest-only` stores the inventory without the Phase-2 resolve;
+  `--resolve-only` runs only Phase 2.
+- External calls go through `src.rate_limiter.RateLimiter` (pacing, `Retry-After`,
+  adaptive backoff). `--max-api-calls` bounds the run; it stops gracefully after
+  committing what was discovered (TARCiS-style).
+
+### Zotero / PDF hooks
+
+- `src/zotero_sync.push_dois_to_zotero(conn, paper_ids, ...)` pushes discovered
+  DOIs to a Zotero collection for bulk PDF download. `pyzotero` is optional — if
+  it is not installed or not configured (`ZOTERO_LIBRARY_ID` / `ZOTERO_API_KEY`),
+  the function prints a clear message and returns 0 (never crashes).
+- `--with-pdf` reports the count of papers with a captured `pdf_url`.
+
+### `snowball_runs` logging (TARCiS-style)
+
+Every harvest/resolve run writes a row to `snowball_runs`
+`(direction, source, seed_count, references_harvested, new_papers, edges,
+api_calls, started_at, finished_at, note)`, so the provenance and cost of each
+snowball expansion is auditable.

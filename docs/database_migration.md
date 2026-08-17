@@ -68,6 +68,14 @@ Version `1`, `add_papers_notes_column`, adds an optional `notes TEXT` column to
 `papers`. It is guarded by a `PRAGMA table_info(papers)` check, so re-running
 is safe and no existing paper rows are touched.
 
+
+## Version 2 — `add_reference_lists_runs_pdf`
+
+Added (data-preserving) the `reference_lists` and `snowball_runs` tables plus a
+`pdf_url` column on `papers`. The migration is idempotent: it creates the two
+tables only if absent and alters `papers` to add `pdf_url` only when the column
+is missing (guarded by `PRAGMA table_info`). All existing rows are untouched.
+
 ## Legacy v1 databases
 
 The earlier one-off `migrate_from_v1(conn, dry_run=False)` remains available for

@@ -3,6 +3,12 @@
 This repo is set up for **agentic coding** with a small team of Kilo agents
 coordinated by a single **orchestrator** and a shared **message board**.
 
+## Orchestrator operating mode
+
+- Plan-then-approve: present an execution plan and get user sign-off before any implementation.
+- Direct Q&A: answer project/architecture questions without spawning subagents (see `.kilo/skill/orchestrator-policy`).
+
+
 ## Research aim & locked design decisions
 
 This repo is the engine for a **Master's-thesis study** about **evaluating the

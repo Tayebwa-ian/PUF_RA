@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS papers (
     publication_title TEXT NOT NULL,
     doi TEXT UNIQUE,
     keywords TEXT,
+    pdf_url TEXT,
     is_relevant BOOLEAN DEFAULT NULL,
     relevance_score REAL,
     created_at TEXT NOT NULL DEFAULT current_timestamp,
@@ -209,6 +210,50 @@ CREATE TABLE IF NOT EXISTS llm_judge (
 );
 """
 
+CREATE_REFERENCE_LISTS = """
+CREATE TABLE IF NOT EXISTS reference_lists (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    parent_paper_id INTEGER NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'backward'
+        CHECK (direction IN ('backward', 'forward')),
+    ref_index INTEGER,
+    ref_doi TEXT,
+    ref_title TEXT,
+    ref_year INTEGER,
+    ref_authors TEXT,
+    ref_unstructured TEXT,
+    resolved_paper_id INTEGER,
+    source TEXT,
+    discovered_at TEXT NOT NULL DEFAULT current_timestamp,
+    FOREIGN KEY (parent_paper_id) REFERENCES papers(id) ON DELETE CASCADE,
+    FOREIGN KEY (resolved_paper_id) REFERENCES papers(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_REFERENCE_LISTS_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reference_lists
+    ON reference_lists (
+        parent_paper_id, direction,
+        COALESCE(ref_doi, ''), COALESCE(ref_unstructured, '')
+    );
+"""
+
+CREATE_SNOWBALL_RUNS = """
+CREATE TABLE IF NOT EXISTS snowball_runs (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    direction TEXT,
+    source TEXT,
+    seed_count INTEGER,
+    references_harvested INTEGER NOT NULL DEFAULT 0,
+    new_papers INTEGER NOT NULL DEFAULT 0,
+    edges INTEGER NOT NULL DEFAULT 0,
+    api_calls INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL DEFAULT current_timestamp,
+    finished_at TEXT,
+    note TEXT
+);
+"""
+
 CREATE_SCHEMA_MIGRATIONS = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
@@ -226,6 +271,9 @@ SCHEMA_STATEMENTS = [
     CREATE_PAPER_QUERIES,
     CREATE_PAPER_SOURCES,
     CREATE_SNOWBALL_EDGES,
+    CREATE_REFERENCE_LISTS,
+    CREATE_REFERENCE_LISTS_INDEX,
+    CREATE_SNOWBALL_RUNS,
     CREATE_RELEVANCE_EVALS,
     CREATE_RUNS,
     CREATE_DECISIONS,
@@ -473,6 +521,17 @@ def _migration_1_add_papers_notes_column(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
     if "notes" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN notes TEXT;")
+
+
+@register_migration(2, "add_reference_lists_runs_pdf")
+def _migration_2_reference_lists_runs_pdf(conn: sqlite3.Connection) -> None:
+    """Add reference_lists + snowball_runs tables and papers.pdf_url column."""
+    conn.execute(CREATE_REFERENCE_LISTS)
+    conn.execute(CREATE_REFERENCE_LISTS_INDEX)
+    conn.execute(CREATE_SNOWBALL_RUNS)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    if "pdf_url" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN pdf_url TEXT;")
 
 
 def get_applied_versions(conn: sqlite3.Connection) -> "set[int]":

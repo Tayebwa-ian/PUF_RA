@@ -278,6 +278,139 @@ The orchestrator forwards automatically:
   Committed reviewed-green TASK-002 changes (agent config, MCP server, migration framework, query1/query2 ingestion into results.db, snowballing + run). 91 passed, 1 skipped.
 - Result: committed 6a34a87 (local only, not pushed).
 
+## [TASK-003] Orchestrator SOP + compact command + snowballing redesign
+- Type: COORD
+- From: orchestrator
+- To: orchestrator
+- Status: IN_PROGRESS
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Three-part initiative to codify and improve orchestration + snowballing:
+  1. Orchestrator SOP: encode plan-then-approve and direct Q&A as a skill
+     (.kilo/skill/orchestrator-policy) + AGENTS.md note (MSG-A).
+  2. Compact command: add a concise orchestrator command/shorthand for the
+     standard pipeline (MSG-B).
+  3. Snowballing redesign: redesign the snowballing subsystem for scientific
+     rigor and rate-limit resilience (MSG-C).
+- Result: in progress
+
+## [MSG-A] Orchestrator SOP (skill + AGENTS note)
+- Type: COORD
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Create .kilo/skill/orchestrator-policy/SKILL.md (plan-then-approve +
+  direct Q&A) and add an 'Orchestrator operating mode' note to AGENTS.md.
+- Result: Created orchestrator-policy skill + AGENTS.md note; plan-then-approve + direct Q&A encoded.
+
+## [MSG-B] Compact command for standard pipeline
+- Type: COORD
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: normal
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Add a concise orchestrator command/shorthand that runs the standard
+  plan -> research -> arch -> implement -> test -> review -> git pipeline.
+- Result: Added src/compact.py + scripts/compact.py + `puf compact` + skill + tests; archives resolved entries, writes STATE.md, idempotent.
+
+## [MSG-C] Snowballing redesign
+- Type: COORD
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Redesign the snowballing subsystem for scientific rigor and rate-limit
+  resilience (provenance, dedup, adaptive pacing, graceful abort).
+- Result: Two-phase local-first snowball implemented: reference_lists inventory
+  + backward/forward + batch Crossref/OpenAlex + Zotero/PDF hooks + snowball_runs
+  logging (src/reference_store.py, src/zotero_sync.py, new CLI flags). Real run on
+  results.db: papers 2389->2479 (+90), reference_lists inventory=4382
+  (backward 4378 + forward 4), snowball_edges=377, resolved=379, papers with
+  pdf_url=90; budget stops graceful; Zotero no-ops when unconfigured. Existing
+  snowball tests still green; added tests/test_reference_store.py (7 tests); full
+  suite 102 passed, 1 skipped.
+
+## [TEST-002] Baseline: TASK-003
+- Type: TEST
+- From: tester
+- To: orchestrator
+- Status: PASS
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Ran `python -m pytest -q`. Result: 102 passed, 1 skipped in 58.53s. No failures or errors.
+  Real DB: papers=2479, reference_lists=4382, snowball_edges=377, snowball_runs=5, pdf_urls=90.
+- Result: PASS — all green, ready for review
+
+## [REVIEW-002] Review of TASK-003
+- Type: REVIEW
+- From: code-review
+- To: orchestrator
+- Status: APPROVED
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Verdict: all three requirements are substantially met, but R-B has one
+  blocking data-loss bug. R-A (orchestrator SOP) is cleanly encoded in
+  .kilo/skill/orchestrator-policy/SKILL.md + AGENTS.md "Orchestrator operating
+  mode". R-C (snowball redesign) is correct: local-first resolution via
+  local_find_paper before any per-paper network call, full reference_lists
+  inventory (incl. DOI-less/unstructured refs), backward+forward (OpenAlex
+  cites:), batch resolution (OpenAlex `ids.openalex:` `|` OR; Crossref per-DOI
+  with documented no-OR limitation), lazy/optional pyzotero (batches <=50,
+  graceful no-op), pdf_url captured from OpenAlex best_oa_location/Crossref,
+  snowball_runs TARCiS-style logging, DOI+title dedup precedence preserved,
+  expression-unique reference_lists index, and migration v2 is additive +
+  idempotent (guarded ALTER for pdf_url; CREATE IF NOT EXISTS for new tables)
+  so the 2389-paper corpus is preserved. Legacy run_snowball path is unchanged
+  and the suite is green (102 passed, 1 skipped; 35 in the 3 reviewed files).
+  Issues (severity: blocker/major/minor):
+  - scripts/compact.py:64 — `--apply` does `Path(args.archive).write_text(...)`
+    on `.kilo/board/BOARD.archive.md`, and `compact_board`/`_build_archive`
+    never read the pre-existing archive, so a SECOND `--apply` overwrites the
+    file with only the current run's entries and DISCARDS all previously
+    archived summaries. This directly violates R-B ("no data loss", "resolved
+    entries ... never deleted") and the skill's recommended "periodically ...
+    housekeeping" use. Fix: open the existing archive in append mode / read it
+    first and concatenate the new `archived` lines, instead of overwriting.
+    (blocking)
+  - docs/snowball.md:156 — lists `snowball_runs` column `note`, but
+    `_insert_run`/`_finish_run` (src/reference_store.py:475-498) never populate
+    it. Harmless; either drop `note` from the doc tuple or set it. (minor, non-blocking)
+  - src/reference_store.py:577-588 — the in-memory `seen` dedup key is
+    `(ref_doi or "", unstructured)` while the DB unique index uses
+    COALESCE(ref_doi,'')/COALESCE(ref_unstructured,''), and `_upsert_reference_list`
+    reassigns `unstructured=title_full` for title-only refs. Mismatch can let an
+    INSERT OR IGNORE silently drop a row while `references_harvested` is still
+    incremented. Edge case, low impact. (minor, non-blocking)
+- Result: APPROVED after BUG-002 fix (compact archive now merges/dedupes across runs, no data loss); R-A and R-C already approved.
+
+## [BUG-002] compact archive must merge, not overwrite
+- Type: BUG
+- From: orchestrator
+- To: debugger
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  REVIEW-002 flagged R-B blocking: scripts/compact.py overwrote BOARD.archive.md each --apply, losing prior archives. Fixed to merge/dedupe; added regression test.
+- Result: archive now appends/merges across runs; no data loss; tests pass.
+
 <!-- New entries go above this line. -->
 
 
