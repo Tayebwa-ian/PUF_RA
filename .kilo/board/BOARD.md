@@ -131,7 +131,7 @@ The orchestrator forwards automatically:
 - Type: COORD
 - From: orchestrator
 - To: orchestrator
-- Status: IN_PROGRESS
+- Status: DONE
 - Priority: high
 - Created: 2026-08-17
 - Updated: 2026-08-17
@@ -143,6 +143,7 @@ The orchestrator forwards automatically:
   4. Plan for DB migration (design will evolve; never lose data) — forward, idempotent, data-preserving migrations.
   5. Implement snowballing well with smart rate limiting; run it on existing DB papers; insert discovered papers deduped by DOI; record snowball provenance like query1/query2; a paper found by query1 AND query2 AND snowball is ONE row with provenance links to all three (no reinsert).
   Subtasks: MSG-003 (agent config), MSG-004 (migration framework), MSG-005 (MCP server), MSG-006 (ingest + real DB), MSG-007 (snowball + run).
+- Result: Implemented & committed: agent no-sudo shell, MCP server, results.db built+ingested (2198 distinct, 582 deduped), migration framework, snowball run (2389 papers, 199 edges, multi-method provenance). 91 passed.
 
 ## [MSG-003] agent config: shell as current user, never sudo
 - Type: COORD
@@ -264,6 +265,18 @@ The orchestrator forwards automatically:
 - Body: |
   Reviewer (REVIEW-001) flagged: (1) ingest find_existing_paper missing title fallback when DOI absent -> double-insert risk; (2) migrate_from_v1 references non-existent human_decision column; (3) MCP execute_select false-positive on keywords inside string literals; (4) snowball api_calls over-count.
 - Result: all four fixed; dedup + migrate + MCP guard + count corrected; tests pass.
+
+## [GIT-001] Commit TASK-002 (reviewed + green)
+- Type: GIT
+- From: git-manager
+- To: orchestrator
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Committed reviewed-green TASK-002 changes (agent config, MCP server, migration framework, query1/query2 ingestion into results.db, snowballing + run). 91 passed, 1 skipped.
+- Result: committed 6a34a87 (local only, not pushed).
 
 <!-- New entries go above this line. -->
 
