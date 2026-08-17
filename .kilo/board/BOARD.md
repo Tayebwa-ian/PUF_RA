@@ -282,7 +282,7 @@ The orchestrator forwards automatically:
 - Type: COORD
 - From: orchestrator
 - To: orchestrator
-- Status: IN_PROGRESS
+- Status: DONE
 - Priority: high
 - Created: 2026-08-17
 - Updated: 2026-08-17
@@ -294,7 +294,7 @@ The orchestrator forwards automatically:
      standard pipeline (MSG-B).
   3. Snowballing redesign: redesign the snowballing subsystem for scientific
      rigor and rate-limit resilience (MSG-C).
-- Result: in progress
+- Result: Implemented & committed: orchestrator plan-then-approve SOP + direct Q&A; compact command (archive merge, STATE.md); snowballing redesign (local-first, reference inventory, backward+forward, batch, Zotero/PDF, TARCiS logging). 104 passed.
 
 ## [MSG-A] Orchestrator SOP (skill + AGENTS note)
 - Type: COORD
@@ -410,6 +410,18 @@ The orchestrator forwards automatically:
 - Body: |
   REVIEW-002 flagged R-B blocking: scripts/compact.py overwrote BOARD.archive.md each --apply, losing prior archives. Fixed to merge/dedupe; added regression test.
 - Result: archive now appends/merges across runs; no data loss; tests pass.
+
+## [GIT-002] Commit TASK-003 (reviewed + green)
+- Type: GIT
+- From: git-manager
+- To: orchestrator
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Committed reviewed-green TASK-003 (orchestrator SOP, compact command, snowballing redesign + BUG-002 archive fix). 104 passed, 1 skipped.
+- Result: committed 7db58e8 (local only, not pushed).
 
 <!-- New entries go above this line. -->
 
