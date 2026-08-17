@@ -97,3 +97,19 @@ def test_parse_returns_list():
     result = parse_bibtex("")
     assert isinstance(result, list)
     assert len(result) == 0
+
+
+UNBALANCED_BRACES = """
+@inproceedings{pham2024,
+  title = {{SRAM}-based {Physically} {Unclonable} {Function} using {Lightweight} {Hamming}-{Code} {Fuzzy} {Extractor} for {Energy} {Harvesting} {Beat} {Sensors}},
+  year = {2024},
+  doi = {10.1109/ATC63255.2024.10908150}
+}
+"""
+
+
+def test_parse_unbalanced_braces_terminates():
+    # Regression: brace-unbalanced values must not hang _strip_outer_braces.
+    entries = parse_bibtex(UNBALANCED_BRACES)
+    assert len(entries) == 1
+    assert entries[0]["doi"] == "10.1109/ATC63255.2024.10908150"

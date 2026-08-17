@@ -45,23 +45,29 @@ FIELD_RE = re.compile(
 
 
 def _strip_outer_braces(text: str) -> str:
-    """Remove one layer of wrapping braces if present, e.g. {{Title}} → {Title}."""
+    """Remove layers of wrapping braces if present, e.g. {{Title}} → Title.
+
+    Only strips a layer when the outermost pair genuinely wraps the whole
+    string (the interior is brace-balanced). This guarantees termination even
+    for unbalanced input such as ``{{Foo}-bar}``.
+    """
     text = text.strip()
-    while text.startswith("{") and text.endswith("}"):
+    while len(text) >= 2 and text.startswith("{") and text.endswith("}"):
         depth = 0
-        for i, ch in enumerate(text):
+        balanced = True
+        for ch in text[1:-1]:
             if ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1
-            if depth == 0:
-                if i == len(text) - 1:
-                    text = text[1:-1].strip()
+                if depth < 0:
+                    balanced = False
                     break
-                else:
-                    break  # outer braces don't span the whole string
-        else:
+        if depth != 0:
+            balanced = False
+        if not balanced:
             break
+        text = text[1:-1].strip()
     return text
 
 

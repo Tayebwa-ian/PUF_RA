@@ -209,6 +209,14 @@ CREATE TABLE IF NOT EXISTS llm_judge (
 );
 """
 
+CREATE_SCHEMA_MIGRATIONS = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT current_timestamp
+);
+"""
+
 # Ordered list of CREATE TABLE statements.
 # The order respects foreign key dependencies.
 SCHEMA_STATEMENTS = [
@@ -226,6 +234,7 @@ SCHEMA_STATEMENTS = [
     CREATE_EVAL_RUNS,
     CREATE_EVALS,
     CREATE_LLM_JUDGE,
+    CREATE_SCHEMA_MIGRATIONS,
 ]
 
 
@@ -341,7 +350,7 @@ def migrate_from_v1(conn: sqlite3.Connection, dry_run: bool = False) -> None:
     # Step 4: Migrate papers (drop legacy query_id, keep everything else)
     paper_cols = [
         "id", "title", "authors", "year", "abstract",
-        "publication_title", "doi", "keywords", "human_decision",
+        "publication_title", "doi", "keywords",
     ]
     cols_str = ", ".join(paper_cols)
     placeholders = ", ".join("?" for _ in paper_cols)
@@ -419,3 +428,107 @@ def _migrate_sources_from_queries(conn: sqlite3.Connection) -> None:
                     "INSERT OR IGNORE INTO paper_sources (paper_id, source_id) VALUES (?, ?)",
                     (pq_row[0], source_id),
                 )
+
+
+# ---------------------------------------------------------------------------
+# Forward, additive, data-preserving migration framework
+# ---------------------------------------------------------------------------
+# All future schema changes are expressed as forward-only, ADDITIVE migrations
+# (ALTER TABLE ... ADD COLUMN, CREATE TABLE). Migrations never drop columns,
+# drop tables, or delete data, so user data is always preserved.
+#
+# Each migration is a tuple: (version: int, name: str, up_fn).
+# `up_fn(conn)` performs the additive change and must be safe to re-run
+# (idempotent) — typically guarded with a PRAGMA table_info / table_exists
+# check before issuing the DDL.
+
+from typing import Callable, Tuple
+
+MIGRATIONS: "list[Tuple[int, str, Callable[[sqlite3.Connection], None]]]" = []
+
+
+def register_migration(version: int, name: str):
+    """Decorator/helper to register an additive, forward migration.
+
+    Usage::
+
+        @register_migration(2, "add_evals_latency_bucket")
+        def up(conn):
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(evals)")}
+            if "latency_bucket" not in cols:
+                conn.execute("ALTER TABLE evals ADD COLUMN latency_bucket TEXT;")
+
+    The decorated function is stored in the module-level MIGRATIONS registry,
+    ordered by version when applied.
+    """
+    def _wrap(up_fn: Callable[[sqlite3.Connection], None]):
+        MIGRATIONS.append((version, name, up_fn))
+        return up_fn
+    return _wrap
+
+
+@register_migration(1, "add_papers_notes_column")
+def _migration_1_add_papers_notes_column(conn: sqlite3.Connection) -> None:
+    """Example forward migration: add an optional notes column to papers."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    if "notes" not in cols:
+        conn.execute("ALTER TABLE papers ADD COLUMN notes TEXT;")
+
+
+def get_applied_versions(conn: sqlite3.Connection) -> "set[int]":
+    """Return the set of migration versions already recorded."""
+    if not table_exists(conn, "schema_migrations"):
+        return set()
+    rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
+    return {row[0] for row in rows}
+
+
+def get_schema_version(conn: sqlite3.Connection) -> int:
+    """Return the highest applied migration version, or 0 if none."""
+    applied = get_applied_versions(conn)
+    return max(applied) if applied else 0
+
+
+def apply_migrations(
+    conn: sqlite3.Connection, up_to: "Optional[int]" = None
+) -> "list[int]":
+    """Apply all pending forward migrations in ascending version order.
+
+    Already-applied migrations (present in schema_migrations) are skipped,
+    making this safe to call repeatedly. The schema_migrations table is
+    created if missing. Each applied migration records its (version, name).
+
+    Args:
+        conn: The database connection.
+        up_to: Optional upper version bound (inclusive). If None, apply all.
+
+    Returns:
+        The list of versions actually applied in this call.
+    """
+    conn.execute(CREATE_SCHEMA_MIGRATIONS)
+    conn.commit()
+
+    pending = [
+        (version, name, up_fn)
+        for (version, name, up_fn) in sorted(MIGRATIONS, key=lambda m: m[0])
+        if (up_to is None or version <= up_to)
+        and version not in get_applied_versions(conn)
+    ]
+
+    applied_now: "list[int]" = []
+    for version, name, up_fn in pending:
+        up_fn(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            (version, name),
+        )
+        applied_now.append(version)
+
+    conn.commit()
+    return applied_now
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create the base schema and apply any pending forward migrations."""
+    create_schema(conn)
+    apply_migrations(conn)

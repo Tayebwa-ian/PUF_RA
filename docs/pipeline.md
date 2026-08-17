@@ -58,6 +58,9 @@ Direct BibTeX → SQLite importer. Handles upsert by DOI, junction table populat
 ### `src/csv_importer.py`
 CSV → SQLite importer. Supports ACM and IEEE CSV formats. Refactored from `run_csv_to_db.py`.
 
+### `src/rate_limiter.py`
+Smart client-side rate limiting: minimum call spacing, adaptive widening while failures persist, `Retry-After` parsing (seconds or HTTP date), exponential backoff with jitter, and `RateLimitError` once the retry budget is spent.
+
 ### `src/relevance.py`
 Empirical relevance engine. Hybrid keyword + BM25 scoring with configurable weights and threshold. Stores evaluations in `relevance_evals`.
 
@@ -65,7 +68,7 @@ Empirical relevance engine. Hybrid keyword + BM25 scoring with configurable weig
 LLM screening module. Queries OpenAI-compatible API, verifies excerpts, stores decisions in `decisions` table.
 
 ### `src/snowball.py`
-Backward snowball search. Fetches references via Semantic Scholar API (primary) and Crossref (fallback). Normalises references, deduplicates by DOI/title, creates `snowball_edges`.
+Backward snowball search. Seeds from explicit paper ids, from `paper_queries` (query ids) or from the whole corpus. Fetches references via Semantic Scholar API (primary) or Crossref, normalises them, deduplicates by DOI + normalised title, accumulates `paper_sources` provenance (`snowball` added to existing query links, never re-inserting a paper) and records `snowball_edges`.
 
 ### `src/eval_store.py`
 Evaluation storage & analysis. Ingests eval JSONL and ground-truth CSV; computes inter-rater agreement (Cohen's / Fleiss' κ) and consensus; computes per-method metrics (precision/recall/F1, κ, ROC-AUC) vs the gold standard.
@@ -140,7 +143,7 @@ See `database_struct.sql` for the canonical schema. Key tables:
 ## Error Handling
 
 - Importers use try/except per-row; bad rows are skipped with warnings.
-- Snowball API calls use exponential backoff for rate limits.
+- Snowball API calls go through `src/rate_limiter.py`: pacing, `Retry-After`, exponential backoff with jitter, and a clean stop (`aborted: 1`) after `max_retries` consecutive failures.
 - Database operations use context managers with rollback on failure.
 - LLM screening retries per paper up to `max_retries` times.
 
@@ -149,7 +152,7 @@ See `database_struct.sql` for the canonical schema. Key tables:
 - SQLite WAL mode for better concurrent reads.
 - Junction tables use composite primary keys for fast lookups.
 - BM25 corpus is built in-memory; for >100K papers, consider incremental BM25 or external search engine.
-- Snowball API rate limits handled with configurable delay.
+- Snowball API rate limits handled by `RateLimiter` (`--delay` pacing) plus an `--max-api-calls` budget; bounded runs resume by skipping already-expanded seeds.
 
 ## Security Considerations
 

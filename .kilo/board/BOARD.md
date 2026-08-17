@@ -126,7 +126,147 @@ The orchestrator forwards automatically:
   in-scope/out-of-scope/hybrid; ML/modeling out of scope; LLMs configurable."
 - Result: 1 recommendation; schedule on approval.
 
+
+## [TASK-002] Empower agents + SQL MCP + DB build, ingest, snowball
+- Type: COORD
+- From: orchestrator
+- To: orchestrator
+- Status: IN_PROGRESS
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  User request (5 parts):
+  1. Empower coder + git-manager agents: shell access as current user, NEVER sudo.
+  2. Build an MCP server to interact with the SQLite DB.
+  3. Create the real DB and ingest cititations_data/query1 + query2; dedup by DOI AND title; record provenance (query1/query2 + platform).
+  4. Plan for DB migration (design will evolve; never lose data) — forward, idempotent, data-preserving migrations.
+  5. Implement snowballing well with smart rate limiting; run it on existing DB papers; insert discovered papers deduped by DOI; record snowball provenance like query1/query2; a paper found by query1 AND query2 AND snowball is ONE row with provenance links to all three (no reinsert).
+  Subtasks: MSG-003 (agent config), MSG-004 (migration framework), MSG-005 (MCP server), MSG-006 (ingest + real DB), MSG-007 (snowball + run).
+
+## [MSG-003] agent config: shell as current user, never sudo
+- Type: COORD
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: Create repo kilo.json (deny sudo, allow shell) and .kilo/agent/{coder,git-manager}.md with the no-sudo policy.
+- Result: kilo.json + agent md files created; sudo blocked for repo agents.
+
+## [MSG-004] migration framework (forward, data-preserving)
+- Type: ARCH
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: Enhance src/db_schema.py with a versioned, idempotent, additive migration framework (schema_migrations table + apply_migrations) that never drops user data; add one example forward migration; docs/database_migration.md; tests.
+- Result: Added schema_migrations framework + example migration (v1 add_papers_notes_column); ensure_schema/apply_migrations/get_schema_version idempotent; docs + tests; all tests pass.
+
+## [MSG-005] MCP server for SQLite DB
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: Create an MCP server (stdio) exposing tools to read/query the SQLite DB (list/get papers, get by DOI, search, provenance, guarded SELECT, optional insert). Add `mcp` dep; stdlib fallback if SDK unavailable. Tests.
+- Result: Created src/mcp_server.py (MCP stdio server, 7 tools, read-only SELECT guard + mode=ro conn); official mcp SDK (MCPServer, mcp 2.0.0) with stdlib JSON-RPC fallback; mcp added to requirements.txt; tests/test_mcp_server.py (25 tests); 62 passed, 1 skipped.
+
+## [MSG-006] ingest query1/query2 into real DB + provenance
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: Create ingestion (scripts/ingest_citations.py) over cititations_data/query1 + query2; dedup by DOI AND normalized title; record provenance via paper_queries + paper_sources; idempotent; populate the real results.db. Tests incl. cross-query DOI dedup.
+- Result: Populated results.db: 2198 distinct papers from 2780 entries (582 deduped across query1/query2); method-source provenance query1:ACM=1000, query1:IEEE=417, query2:ACM=608, query2:IEEE=754; 570 papers carry multi-method links (one with all 4). Also fixed parse hang on brace-unbalanced titles in src/bibtex_parser.py. All tests pass (68 passed, 1 skipped).
+
+## [MSG-007] snowballing + smart rate limit + run
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: Fix snowball seed bug (v2 has no papers.query_id; use paper_queries); add smart RateLimiter (Retry-After, jitter, adaptive backoff, per-host); dedup by DOI+title; record snowball provenance via paper_sources('snowball') + snowball_edges; multi-membership (query1+query2+snowball = one row, all links); CLI `puf snowball`; run on existing DB, insert deduped. Tests.
+- Result: Snowball fixed (v2 seed via paper_queries join + seed_paper_ids/all-papers fallback), new src/rate_limiter.py RateLimiter (pacing, Retry-After seconds/HTTP-date, jitter, adaptive backoff, RateLimitError stop) + max_api_calls budget and resume via skip_expanded, dedup by DOI(case-insensitive)+normalized title with paper_sources accumulation (no re-insert) and snowball_edges; CLI `puf snowball` (run default) + scripts/run_snowball.py; real run on results.db: semantic_scholar hit persistent HTTP 429 and stopped gracefully (30 refs, 30 linked, aborted=1), crossref runs inserted 191 new papers (2198 -> 2389, 199 edges, 198 snowball links, 7 papers now multi-method incl. paper 368 = query1:ACM+query2:ACM+snowball); tests pass (88 passed, 1 skipped).
+## [TEST-001] Baseline: TASK-002 implementation
+- Type: TEST
+- From: tester
+- To: orchestrator
+- Status: PASS
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Ran `python -m pytest -q`. Result: 88 passed, 1 skipped. No failures or errors.
+  Real DB sanity: papers=2389, snowball source links=198, snowball_edges=199.
+- Result: PASS — all green, ready for review
+
+## [REVIEW-001] Review of TASK-002 changes
+- Type: REVIEW
+- From: code-review
+- To: orchestrator
+- Status: APPROVED
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  All five requirements are substantially met and the full suite is green
+  (88 passed, 1 skipped). Safety posture is good: MCP `execute_select`
+  rejects non-SELECT/chained statements and opens a read-only connection;
+  `insert_paper` validates types; `kilo.json` sets `"sudo *": "deny"`; and
+  `src/snowball._get_seed_papers` correctly joins through `paper_queries`
+  (no reference to the removed `papers.query_id`). Two correctness issues
+  were found, one of which is a genuine gap against requirement 3.
+  Issues (severity: blocker/major/minor):
+  - scripts/ingest_citations.py:74-91 — `find_existing_paper` returns None as
+    soon as the incoming entry has a DOI that is not found, and never falls
+    back to a title match. A paper that appears once with a DOI and once
+    without one is therefore inserted twice, breaking requirement 3
+    ("dedup by DOI AND title"). Fix: mirror `src/snowball.find_existing_paper_id`
+    — after the DOI miss, fall back to title matching but skip any existing
+    row that carries a *different* non-null DOI; add a test asserting a
+    DOI-bearing entry dedups against an existing title-only row. (major)
+  - src/db_schema.py:351-361 — legacy `migrate_from_v1` inserts the column
+    `human_decision` into the v2 `papers` table, which has no such column
+    (v2 uses `is_relevant`/`relevance_score`), so a v1->v2 migrate raises
+    OperationalError. It is outside the new forward framework (req 4) but a
+    real crash. Fix: drop `human_decision` from the selected/inserted column
+    list. (major, legacy/pre-existing — non-blocking for the 5 requirements)
+  - src/mcp_server.py:90-146 — `assert_select_only` rejects any statement that
+    merely contains a forbidden word inside a string literal (e.g.
+    `WHERE title='update'`). Conservative false positive; acceptable for a
+    read-only guard. Non-blocking. (minor)
+  - src/snowball.py:719-721 — `stats["api_calls"]` is derived from
+    `limiter.total_calls`, which also increments on every `wait_before_call`
+    (pacing), so the reported/budgeted API-call count can exceed real
+    requests and the budget stop can fire a request early. Non-blocking;
+    consider counting only real requests via `_fetch_references`' `used`. (minor)
+- Result: APPROVED after BUG-001 fixes (ingest title-fallback dedup, migrate_from_v1 human_decision removed, MCP guard string-literal handling, snowball api_calls count); 88+ pass.
+
+## [BUG-001] ingest title-fallback dedup + minor fixes
+- Type: BUG
+- From: orchestrator
+- To: debugger
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Reviewer (REVIEW-001) flagged: (1) ingest find_existing_paper missing title fallback when DOI absent -> double-insert risk; (2) migrate_from_v1 references non-existent human_decision column; (3) MCP execute_select false-positive on keywords inside string literals; (4) snowball api_calls over-count.
+- Result: all four fixed; dedup + migrate + MCP guard + count corrected; tests pass.
+
 <!-- New entries go above this line. -->
+
 
 ## [MSG-000] Board initialized
 - Type: INFO

@@ -1,0 +1,45 @@
+{
+  "permission": {
+    "bash": {
+      ".venv/bin/python *": "allow",
+      ".venv/bin/python3 *": "allow",
+      ".venv/bin/pip *": "allow",
+      "python3 *": "allow",
+      "python *": "allow",
+      "python -m *": "allow",
+      "python -c *": "allow",
+      "git *": "allow",
+      "git -C *": "allow",
+      "pytest *": "allow",
+      ".venv/bin/pytest *": "allow",
+      "pip install *": "allow",
+      "curl *": "allow",
+      "ls *": "allow",
+      "cat *": "allow",
+      "echo *": "allow",
+      "find *": "allow",
+      "mkdir *": "allow",
+      "rm *": "allow",
+      "mv *": "allow",
+      "cp *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "grep *": "allow",
+      "sed *": "allow",
+      "awk *": "allow",
+      "wc *": "allow",
+      "tar *": "allow",
+      "unzip *": "allow",
+      "cd *": "allow",
+      "source *": "allow",
+      "sqlite3 *": "allow",
+      "timeout *": "allow",
+      "true *": "allow",
+      "sudo *": "deny"
+    },
+    "external_directory": {
+      "/home/passwd/PUF_RA/**": "allow",
+      "/tmp/*": "allow"
+    }
+  }
+}
