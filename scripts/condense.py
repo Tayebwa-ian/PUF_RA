@@ -1,7 +1,7 @@
-"""CLI to compact the agent message board.
+"""CLI to condense the agent message board.
 
 Usage:
-    python -m scripts.compact [--board PATH] [--archive PATH] [--state PATH] [--apply]
+    python -m scripts.condense [--board PATH] [--archive PATH] [--state PATH] [--apply]
 
 Without ``--apply`` it prints a preview (new board, archive, state) and does
 not modify any files. With ``--apply`` it rewrites the board in place and
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.compact import compact_board
+from src.condense import condense_board
 
 DEFAULT_BOARD = ".kilo/board/BOARD.md"
 DEFAULT_ARCHIVE = ".kilo/board/BOARD.archive.md"
@@ -84,10 +84,10 @@ def _write_archive(archive_path: str, archive_text: str) -> None:
     path.write_text(merged, encoding="utf-8")
 
 
-def compact_command(argv: list[str] | None = None) -> int:
+def condense_command(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="puf compact",
-        description="Compact the agent message board (archive resolved, condense open).",
+        prog="puf condense",
+        description="Condense the agent message board (archive resolved, condense open).",
     )
     parser.add_argument("--board", default=DEFAULT_BOARD, help="Board markdown path")
     parser.add_argument("--archive", default=DEFAULT_ARCHIVE, help="Archive markdown path")
@@ -105,7 +105,7 @@ def compact_command(argv: list[str] | None = None) -> int:
         return 1
 
     text = board_path.read_text(encoding="utf-8")
-    new_board, archive_text, state_text = compact_board(
+    new_board, archive_text, state_text = condense_board(
         text, archive_path=args.archive
     )
 
@@ -123,11 +123,11 @@ def compact_command(argv: list[str] | None = None) -> int:
     _write_archive(args.archive, archive_text)
     Path(args.state).write_text(state_text, encoding="utf-8")
     print(
-        "Compacted. Board: %s (resolved entries archived to %s); state: %s"
+        "Condensed. Board: %s (resolved entries archived to %s); state: %s"
         % (board_path, args.archive, args.state)
     )
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(compact_command())
+    sys.exit(condense_command())

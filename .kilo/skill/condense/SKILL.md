@@ -1,9 +1,9 @@
 ---
-name: compact
-description: Summarize and reduce the agent message board by archiving resolved entries and condensing open ones, plus writing a lean STATE.md. Use when the board is long or before context-heavy sessions.
+name: condense
+description: Summarize and reduce the agent message board by archiving resolved entries and condensing open ones, plus writing a lean STATE.md. Use when the board is long or before context-heavy sessions. (Formerly 'compact'.)
 ---
 
-# Compact the Message Board
+# Condense the Message Board
 
 The shared board (`.kilo/board/BOARD.md`) accumulates `TASK-`/`MSG-` entries
 and grows verbose over time. Every agent/subagent must read it, so a long board
@@ -35,11 +35,11 @@ wastes context. This skill compresses it without losing information.
 
 Preview only (prints new board, archive, and state; writes nothing):
 
-    python -m scripts.compact
+    python -m scripts.condense
 
 Apply (rewrites the board in place; writes archive + state files):
 
-    python -m scripts.compact --apply
+    python -m scripts.condense --apply
 
 Options:
 
@@ -50,8 +50,8 @@ Options:
 
 The same logic is also reachable via the `puf` entry point:
 
-    puf compact            # preview
-    puf compact --apply    # apply
+    puf condense            # preview
+    puf condense --apply    # apply
 
 ## Notes
 

@@ -224,6 +224,9 @@ CREATE TABLE IF NOT EXISTS reference_lists (
     ref_unstructured TEXT,
     resolved_paper_id INTEGER,
     source TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'resolved', 'unresolved_no_doi',
+                          'unresolved_title_failed', 'fetch_error')),
     discovered_at TEXT NOT NULL DEFAULT current_timestamp,
     FOREIGN KEY (parent_paper_id) REFERENCES papers(id) ON DELETE CASCADE,
     FOREIGN KEY (resolved_paper_id) REFERENCES papers(id) ON DELETE SET NULL
@@ -532,6 +535,21 @@ def _migration_2_reference_lists_runs_pdf(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
     if "pdf_url" not in cols:
         conn.execute("ALTER TABLE papers ADD COLUMN pdf_url TEXT;")
+
+
+@register_migration(3, "add_reference_lists_status")
+def _migration_3_reference_lists_status(conn: sqlite3.Connection) -> None:
+    """Add the ``status`` column to reference_lists (assured-retrieval accounting).
+
+    Idempotent: the ALTER only runs when the column is missing, so re-applying
+    migrations over an already-migrated database is a no-op. Existing rows
+    default to 'pending' and are promoted to 'resolved' by the resolution code.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(reference_lists)").fetchall()}
+    if "status" not in cols:
+        conn.execute(
+            "ALTER TABLE reference_lists ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+        )
 
 
 def get_applied_versions(conn: sqlite3.Connection) -> "set[int]":

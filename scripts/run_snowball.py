@@ -117,6 +117,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--mailto", default=None,
         help="Contact email for the polite Crossref / OpenAlex pool",
     )
+    parser.add_argument(
+        "--assured", dest="assured", action="store_true", default=True,
+        help="Run the assured backstop (verify_retrieval + retry) after resolving",
+    )
+    parser.add_argument(
+        "--no-assured", dest="assured", action="store_false",
+        help="Disable the assured backstop (first-pass resolution only)",
+    )
+    parser.add_argument(
+        "--export-unresolved", default="snowball_unresolved.csv",
+        help="CSV path for non-resolved references ('' disables the export)",
+    )
     return parser
 
 
@@ -144,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
                     source=_legacy_to_new_source(args.source),
                     mailto=args.mailto,
                     max_api_calls=max_api_calls,
+                    assured=args.assured,
+                    export_path=args.export_unresolved or None,
                 )
                 print(f"Resolve stats: {stats}")
                 return 0
@@ -166,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
                     mailto=args.mailto,
                     max_api_calls=max_api_calls,
                     resolve=not args.harvest_only,
+                    assured=args.assured,
+                    export_path=args.export_unresolved or None,
                 )
                 print(f"Harvest ({direction}) stats: {stats}")
                 if args.with_pdf:

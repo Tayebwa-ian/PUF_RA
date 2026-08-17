@@ -108,6 +108,7 @@ orchestrator periodically triages them.
 | `/research <topic>` | orchestrator → researcher | SOTA research pass |
 | `/architect [area]` | orchestrator → architect | Design evaluation + recs |
 | `/commit [files]` | orchestrator → git-manager | Commit reviewed-green changes |
+| `/condense [--apply]` | orchestrator → condense | Compact the agent message board (archive resolved, condense open, write STATE.md). |
 
 ## Skills (repeatable tasks)
 
@@ -119,6 +120,7 @@ orchestrator periodically triages them.
 - `implement` — coder standards + repo conventions.
 - `research` — how the researcher surveys SOTA and posts findings.
 - `architecture-review` — how the architect evaluates design and posts recs.
+- `condense` — board condensation protocol (`/condense`, `puf condense`).
 
 ## Project quick facts
 

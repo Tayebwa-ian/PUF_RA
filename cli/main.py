@@ -23,6 +23,7 @@ _DISPATCH = {
     "snowball": "cli.snowball",
     "tui": "cli.tui",
     "eval": "cli.eval",
+    "condense": "cli.condense",
 }
 
 
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in _DISPATCH:
         print(
-            "Usage: puf {import|relevance|screen|snowball|tui|eval} ...",
+            "Usage: puf {import|relevance|screen|snowball|tui|eval|condense} ...",
             file=sys.stderr,
         )
         return 2

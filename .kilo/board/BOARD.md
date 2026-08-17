@@ -423,6 +423,202 @@ The orchestrator forwards automatically:
   Committed reviewed-green TASK-003 (orchestrator SOP, compact command, snowballing redesign + BUG-002 archive fix). 104 passed, 1 skipped.
 - Result: committed 7db58e8 (local only, not pushed).
 
+## [TASK-004] Rename compact→condense + delete deprecated scripts
+- Type: COORD
+- From: orchestrator
+- To: coder
+- Status: IN_PROGRESS
+- Priority: normal
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  D1: rename compact→condense (files, functions, skill, cli) + add /condense slash command.
+  D2: delete deprecated root scripts (run_bibtex_to_csv.py, run_csv_to_db.py, run_llm_screening.py).
+  D3: dedicated snowballing doc (handled by another coder afterward).
+  D4: assured reference retrieval, no silent failures (handled by another coder afterward).
+
+## [MSG-D1] Rename compact→condense + slash command
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: normal
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Rename compact→condense (behavior identical) using git mv for tracked files; add
+  /condense slash command (.kilo/command/condense.md) + AGENTS.md row.
+- Result: Renamed compact→condense (files+funcs+skill+cli), added /condense slash command + AGENTS.md row.
+
+## [MSG-D2] Delete deprecated root scripts
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: normal
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Delete run_bibtex_to_csv.py, run_csv_to_db.py, run_llm_screening.py (confirmed
+  unreferenced by code).
+- Result: Deleted run_bibtex_to_csv.py, run_csv_to_db.py, run_llm_screening.py; confirmed unreferenced.
+
+## [MSG-D3] Dedicated snowballing doc
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: normal
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Result: Created docs/snowballing.md (methodology + TARCiS-style results).
+- Body: |
+  Create a dedicated snowballing documentation page (handled by another coder
+  after D1/D2).
+
+## [MSG-D4] Assured reference retrieval (no silent failures)
+- Type: CODER
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: normal
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Result: Added reference_lists.status + assured retrieval (title fallback, multi-source retry, verify_retrieval, unresolved CSV export); re-ran on results.db: resolved=687, pending=3618, fetch_error=2, unresolved_no_doi=75; 3695 rows exported to snowball_unresolved.csv.
+- Body: |
+  Ensure reference retrieval fails loudly, not silently (handled by another coder
+  after D1/D2).
+
+## [TEST-003] Baseline: TASK-004
+- Type: TEST
+- From: tester
+- To: orchestrator
+- Status: PASS
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  Ran `python -m pytest -q`. Result: 109 passed, 1 skipped in 67.72s. No failures or errors.
+  DB: papers=2775, reference_lists=4382, edges=685, status={'fetch_error': 2, 'pending': 3618, 'resolved': 687, 'unresolved_no_doi': 75}.
+  snowball_unresolved.csv present (3696 rows incl. header). condense command works (`python -m scripts.condense --help` exits 0); no stray compact refs in source (.py) — only stale __pycache__ .pyc remain.
+- Result: PASS — all green, ready for review
+
+## [REVIEW-003] Review of TASK-004
+- Type: REVIEW
+- From: code-review
+- To: orchestrator
+- Status: APPROVED
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  D1, D2 and D3 are complete and accurate; D4 is substantially implemented and
+  well tested (7 new tests) but has ONE blocking defect on its own
+  graceful-abort path, so the "no silent failure" guarantee does not hold yet.
+  D1: rename is complete - no `compact_board`/`scripts.compact`/`cli.compact`/
+  dispatch `"compact"` anywhere in .py (only two incidental "compaction" words in
+  tests/test_condense.py:1,136); `.kilo/command/condense.md` exists with the same
+  frontmatter shape as sibling commands, AGENTS.md:111 lists `/condense
+  [--apply]`, cli/main.py:26,34 dispatches it, `python -m scripts.condense
+  --help` + `puf condense` + all three imports work, behaviour preserved
+  (7 condense tests green, incl. archive merge/dedup regression).
+  D2: run_bibtex_to_csv.py / run_csv_to_db.py / run_llm_screening.py are gone;
+  grep over src|scripts|cli|tests finds only historical docstring mentions
+  (src/screening.py:3, src/bibtex_parser.py:3, src/csv_importer.py:3) and two
+  historical doc lines - no imports, `compileall src cli scripts tests` clean.
+  D3: docs/snowballing.md explains the method (two-phase, local-first,
+  backward+forward, rate limiting, provenance/dedup, migration safety, assured
+  retrieval) and every number in its results table matches results.db as read
+  today: papers 2775 (+296 over 2479), reference_lists 4382 (backward 4378 /
+  forward 4), snowball_edges 685, pdf_url 384, status {resolved 687, pending
+  3618, fetch_error 2, unresolved_no_doi 75, unresolved_title_failed 0},
+  snowball_unresolved.csv 3695 rows + header, schema_migrations max=3. The
+  pending bucket is honestly labelled budget residue, not loss; the cited
+  title-fallback wins are real (6 DOI-less refs resolved, e.g. ref 19 -> paper
+  2199, ref 849 -> paper 2336).
+  D4: `reference_lists.status` in CREATE (+CHECK) and idempotent guarded ALTER as
+  migration v3 - the 4382-row inventory and all 2775 papers are preserved;
+  DOI'd refs retry the alternate source (Crossref<->OpenAlex) and become
+  `fetch_error` only when BOTH fail; DOI-less refs go through
+  `_resolve_by_title` (OpenAlex title.search then Crossref
+  query.bibliographic) with a CONSERVATIVE accept rule (exact normalised title
+  AND year within +/-1, src/reference_store.py:598-615) - no false-merge risk
+  found, and `_find_or_create_ref_paper` still routes through
+  `find_existing_paper_id`, which never merges two different non-null DOIs;
+  `verify_retrieval` backfills by DOI and returns still_missing;
+  `export_unresolved` writes every non-resolved row with a reason and the run
+  prints a status summary. Suite green: 109 passed, 1 skipped (verified locally).
+  Issues (severity: blocker/major/minor):
+  - blocker: src/reference_store.py:1033-1037 and 1083-1087 - the parameter
+    `export_unresolved: Optional[str]` SHADOWS the module function
+    `export_unresolved` (line 726), so in the `except RateLimitError` handlers
+    `n = export_unresolved(conn, export_unresolved)` raises
+    `TypeError: 'str' object is not callable`. Reproduced: patching
+    `_resolve_phase` to raise RateLimitError makes `resolve_reference_lists`
+    die with that TypeError, the unresolved CSV is NOT written and `_finish_run`
+    never runs. This is not hypothetical - results.db `snowball_runs` id=6
+    (resolve) and id=9 (forward) both have `finished_at IS NULL`, i.e. real runs
+    already died on this path. It defeats D4 exactly where it matters (rate-limit
+    abort = the most likely failure). Fix: rename the parameter (e.g.
+    `export_unresolved_path`) in `harvest_references` / `resolve_reference_lists`
+    (and pass through unchanged), or call a module alias; add a regression test
+    that raises RateLimitError and asserts the CSV exists + snowball_runs is
+    finalised.
+  - major: src/reference_store.py:359-388 - `_upsert_reference_list`'s follow-up
+    UPDATE is guarded by `resolved_paper_id IS NULL`, so a FRESHLY inserted,
+    locally-resolved reference keeps `status='pending'` while carrying
+    `resolved_paper_id`. Verified: harvest with `resolve=False`
+    (`--harvest-only`) leaves status='pending' for a locally matched ref and
+    `export_unresolved` then reports it as "not yet processed" - a wrong status
+    for an already-resolved reference. The default path is saved only by
+    `_sync_resolved_status` inside `_resolve_phase`. Fix: set
+    `status='resolved'` in the INSERT when `resolved_pid is not None` (or call
+    `_sync_resolved_status` at the end of `harvest_references` regardless of
+    `resolve`).
+  - minor: src/reference_store.py:618-620 - `_resolve_by_title` is annotated
+    `-> Optional[dict[str, Any]]` but returns a 2-tuple on every path (629, 635,
+    637); annotate `tuple[Optional[dict[str, Any]], int]`. Same class of issue:
+    `stats: dict[str, int]` gets a nested dict at line 868
+    (`stats["status_counts"]`), so widen to `dict[str, Any]` (also the
+    `-> dict[str, int]` returns).
+  - minor: src/reference_store.py:482-488 - a row whose `ref_doi` is non-NULL
+    but does not normalise (e.g. empty/whitespace) is `continue`d with NO status
+    write, so it stays `pending` on every future run. Give it an explicit status.
+  - minor: src/reference_store.py:507-510 - `missing = missing[:remaining]`
+    reuses `remaining` computed BEFORE the primary calls, so the alternate-source
+    retry can overshoot `--max-api-calls` by up to one chunk.
+  - minor: src/db_schema.py:540-552 - the v3 ALTER cannot carry the CHECK from
+    the CREATE (SQLite limitation), so migrated DBs (results.db, confirmed) have
+    no status CHECK while fresh DBs do. Data-safe, but docs/snowballing.md:125
+    ("constrained to") should note the CHECK exists only on freshly created
+    schemas.
+  - minor: tests/test_condense.py:176-178, 207-214 - `condense_command` is called
+    without `--state`, so the tests overwrite the TRACKED repo-root `STATE.md`
+    with a pytest tmp path (observed changing pytest-44 -> pytest-45 during this
+    review's run). Pass `--state str(tmp_path / "STATE.md")` so the suite stops
+    dirtying the working tree.
+  - minor: .kilo/command/condense.md:7 says "Use the `compact` skill (now
+    `condense`)" - that skill name no longer exists (`.kilo/skill/condense/`),
+    and AGENTS.md's "Skills" list still omits `condense`. Point at the real name.
+  - minor (non-blocking cleanup): stale `__pycache__/compact*.pyc` remain in
+    src/, cli/, scripts/, tests/; harmless, but a `find . -name 'compact*.pyc'
+    -delete` would avoid confusion. Also note `.gitignore` now adds `*.db*`
+    while `results.db` stays tracked - intentional-looking, just be deliberate
+    when committing the 185 KB DB delta.
+- Result: APPROVED after BUG-003 (export_unresolved shadow fixed -> CSV + _finish_run on RateLimitError; locally-resolved refs get status='resolved'; minors addressed). 109+ pass.
+
+## [BUG-003] snowball assurance: export_unresolved shadow + pending-status
+- Type: BUG
+- From: orchestrator
+- To: debugger
+- Status: DONE
+- Priority: high
+- Created: 2026-08-17
+- Updated: 2026-08-17
+- Body: |
+  REVIEW-003 blocked D4: param `export_unresolved` shadowed module fn (CSV not written + run unfinished on RateLimitError); locally-resolved refs stayed 'pending'. Fixed: renamed param to export_path, set status='resolved' at link time, minors addressed.
+- Result: assured retrieval no longer silently fails; tests pass.
+
 <!-- New entries go above this line. -->
 
 

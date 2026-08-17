@@ -1,8 +1,8 @@
-"""Tests for src.compact.compact_board (pure + idempotent board compaction)."""
+"""Tests for src.condense.condense_board (pure + idempotent board compaction)."""
 
 from __future__ import annotations
 
-from src.compact import compact_board
+from src.condense import condense_board
 
 SAMPLE = """# Agent Message Board
 
@@ -87,8 +87,8 @@ def _open_ids(text: str) -> set[str]:
     return ids
 
 
-def test_compact_basic_split():
-    new_board, archive_text, state_text = compact_board(SAMPLE)
+def test_condense_basic_split():
+    new_board, archive_text, state_text = condense_board(SAMPLE)
 
     # Resolved entries removed from the new board.
     assert "## [MSG-001]" not in new_board
@@ -118,7 +118,7 @@ def test_compact_basic_split():
 
 
 def test_open_body_trimmed():
-    new_board, _, _ = compact_board(SAMPLE)
+    new_board, _, _ = condense_board(SAMPLE)
     # The long open body should be trimmed, dropping the 4th line.
     assert "Fourth body line that exceeds" not in new_board
     # A trim marker is emitted when body was shortened.
@@ -126,21 +126,21 @@ def test_open_body_trimmed():
 
 
 def test_idempotent():
-    new_board_1, archive_1, _ = compact_board(SAMPLE)
-    new_board_2, archive_2, _ = compact_board(new_board_1, archive_path="ARCH.md")
+    new_board_1, archive_1, _ = condense_board(SAMPLE)
+    new_board_2, archive_2, _ = condense_board(new_board_1, archive_path="ARCH.md")
     # The open set is stable across runs.
     assert _open_ids(new_board_1) == _open_ids(new_board_2)
     # No resolved entries re-introduced.
     assert "## [MSG-001]" not in new_board_2
     assert "## [MSG-003]" not in new_board_2
     # Board compaction is idempotent: a 3rd pass matches the 2nd.
-    new_board_3, _, _ = compact_board(new_board_2, archive_path="ARCH.md")
+    new_board_3, _, _ = condense_board(new_board_2, archive_path="ARCH.md")
     assert _open_ids(new_board_2) == _open_ids(new_board_3)
 
 
 def test_missing_marker_safe():
     text = "# Board\n\n## [TASK-9] thing\n- Status: DONE\n- Body: |\n  done body.\n"
-    new_board, archive_text, state_text = compact_board(text)
+    new_board, archive_text, state_text = condense_board(text)
     assert "## [TASK-9]" not in new_board
     assert "- [TASK-9]" in archive_text
     assert "Total entries: 1" in state_text
@@ -166,15 +166,17 @@ def test_archive_merges_across_runs_no_data_loss(tmp_path):
 
     if str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts.compact import compact_command
+    from scripts.condense import condense_command
 
     board = tmp_path / "BOARD.md"
     archive = tmp_path / "ARCH.md"
+    state = tmp_path / "STATE.md"  # never touch the tracked repo-root STATE.md
 
     # First run archives X.
     board.write_text(_board_with("X", "first body"), encoding="utf-8")
-    assert compact_command(
-        ["--board", str(board), "--archive", str(archive), "--apply"]
+    assert condense_command(
+        ["--board", str(board), "--archive", str(archive),
+         "--state", str(state), "--apply"]
     ) == 0
     archived_after_run1 = archive.read_text(encoding="utf-8")
     assert "- [X]" in archived_after_run1
@@ -182,14 +184,17 @@ def test_archive_merges_across_runs_no_data_loss(tmp_path):
 
     # Second run archives a DIFFERENT entry (Y) using the SAME archive file.
     board.write_text(_board_with("Y", "second body"), encoding="utf-8")
-    assert compact_command(
-        ["--board", str(board), "--archive", str(archive), "--apply"]
+    assert condense_command(
+        ["--board", str(board), "--archive", str(archive),
+         "--state", str(state), "--apply"]
     ) == 0
     archived_after_run2 = archive.read_text(encoding="utf-8")
 
     # No data loss: the entry archived in run 1 is still present.
     assert "- [X]" in archived_after_run2
     assert "- [Y]" in archived_after_run2
+    # STATE was written to the temp path only.
+    assert state.exists()
 
 
 def test_archive_dedupes_repeated_ids(tmp_path):
@@ -198,18 +203,21 @@ def test_archive_dedupes_repeated_ids(tmp_path):
 
     if str(Path(__file__).resolve().parent.parent) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from scripts.compact import compact_command
+    from scripts.condense import condense_command
 
     board = tmp_path / "BOARD.md"
     archive = tmp_path / "ARCH.md"
+    state = tmp_path / "STATE.md"  # never touch the tracked repo-root STATE.md
 
     board.write_text(_board_with("X", "first body"), encoding="utf-8")
-    assert compact_command(
-        ["--board", str(board), "--archive", str(archive), "--apply"]
+    assert condense_command(
+        ["--board", str(board), "--archive", str(archive),
+         "--state", str(state), "--apply"]
     ) == 0
     # Re-run with the same resolved entry; it must not be duplicated.
     board.write_text(_board_with("X", "first body"), encoding="utf-8")
-    assert compact_command(
-        ["--board", str(board), "--archive", str(archive), "--apply"]
+    assert condense_command(
+        ["--board", str(board), "--archive", str(archive),
+         "--state", str(state), "--apply"]
     ) == 0
     assert archive.read_text(encoding="utf-8").count("- [X]") == 1
