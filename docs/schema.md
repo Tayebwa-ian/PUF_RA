@@ -143,6 +143,76 @@
 | excerpt_verified | BOOLEAN | NOT NULL | Whether excerpt found in abstract |
 | tokens_used | INT | NOT NULL | Token count for this paper |
 
+### `ground_truth`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| paper_id | INTEGER | NOT NULL, FK → papers(id) ON DELETE CASCADE | Paper reference |
+| annotator_id | TEXT | NOT NULL | Stable id per human annotator (e.g. 'A') |
+| label | TEXT | NOT NULL, CHECK in ('in-scope','out-of-scope','hybrid') | Gold label |
+| confidence | REAL | NULLABLE | Annotator confidence 0–1 |
+| rationale | TEXT | NULLABLE | One-line justification |
+| created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
+
+**Composite UNIQUE constraint:** `(paper_id, annotator_id)` — re-ingest updates in place.
+
+### `ground_truth_consensus`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| paper_id | INTEGER | PK, FK → papers(id) ON DELETE CASCADE | Paper reference |
+| consensus_label | TEXT | NOT NULL, CHECK in (... ,'disagree') | Agreed label, or 'disagree' if annotators clash |
+| n_annotators | INTEGER | NOT NULL | Number of annotators for this paper |
+| n_agree | INTEGER | NOT NULL | Size of the majority |
+| method | TEXT | NULLABLE | 'unanimous' or 'majority' |
+| notes | TEXT | NULLABLE | Free-form notes |
+| created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
+
+Recomputed on every ground-truth ingest (see `src/eval_store.ingest_ground_truth`).
+
+### `eval_runs`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| method | TEXT | NOT NULL | 'baseline_keyword' \| 'baseline_bm25' \| 'baseline_hybrid' \| 'sbert' \| 'llm' |
+| model | TEXT | NOT NULL | Model id, or 'deterministic' |
+| model_version | TEXT | NOT NULL DEFAULT '' | Model version string |
+| prompt_id | TEXT | NOT NULL DEFAULT '' | 'P1' \| 'P2' \| 'P3' \| 'n/a' |
+| temperature | REAL | NOT NULL DEFAULT 0.0 | Sampling temperature |
+| run_index | INTEGER | NOT NULL DEFAULT 1 | Repetition index |
+| config_hash | TEXT | NULLABLE | Hash of prompt + params (reproducibility) |
+| notes | TEXT | NULLABLE | Free-form notes |
+| created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
+
+**Composite UNIQUE constraint:** `(method, model, model_version, prompt_id, temperature, run_index)` — makes re-ingest idempotent.
+
+### `evals`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| run_id | INTEGER | NOT NULL, FK → eval_runs(id) ON DELETE CASCADE | Run reference |
+| paper_id | INTEGER | NOT NULL, FK → papers(id) ON DELETE CASCADE | Paper reference |
+| decision | TEXT | NOT NULL, CHECK in ('in-scope','out-of-scope','hybrid') | Three-class label |
+| score | REAL | NULLABLE | Continuous score (e.g. relevance) |
+| confidence | REAL | NULLABLE | Model confidence 0–1 |
+| rationale | TEXT | NULLABLE | Justification |
+| matched_keywords | TEXT | NULLABLE | JSON list (baselines) |
+| latency_ms | INTEGER | NULLABLE | Latency |
+| created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
+
+**Composite UNIQUE constraint:** `(run_id, paper_id)` — upsert on re-ingest.
+
+### `llm_judge`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| eval_id | INTEGER | NOT NULL, FK → evals(id) ON DELETE CASCADE | Eval being judged |
+| judge_model | TEXT | NOT NULL | Judge model id |
+| judge_prompt_id | TEXT | NOT NULL DEFAULT '' | Judge prompt id |
+| score | REAL | NULLABLE | Quality score |
+| verdict | TEXT | NULLABLE | e.g. 'consistent' / 'inconsistent' |
+| rationale | TEXT | NULLABLE | Judge reasoning |
+| created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
+
 ## Index Recommendations
 
 For large corpora (>10K papers), consider adding indexes:

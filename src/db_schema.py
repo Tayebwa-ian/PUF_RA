@@ -130,6 +130,85 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 """
 
+CREATE_GROUND_TRUTH = """
+CREATE TABLE IF NOT EXISTS ground_truth (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL,
+    annotator_id TEXT NOT NULL,
+    label TEXT NOT NULL
+        CHECK (label IN ('in-scope', 'out-of-scope', 'hybrid')),
+    confidence REAL,
+    rationale TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (paper_id, annotator_id),
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_GROUND_TRUTH_CONSENSUS = """
+CREATE TABLE IF NOT EXISTS ground_truth_consensus (
+    paper_id INTEGER NOT NULL PRIMARY KEY,
+    consensus_label TEXT NOT NULL
+        CHECK (consensus_label IN ('in-scope', 'out-of-scope', 'hybrid', 'disagree')),
+    n_annotators INTEGER NOT NULL,
+    n_agree INTEGER NOT NULL,
+    method TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_EVAL_RUNS = """
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    method TEXT NOT NULL,
+    model TEXT NOT NULL,
+    model_version TEXT NOT NULL DEFAULT '',
+    prompt_id TEXT NOT NULL DEFAULT '',
+    temperature REAL NOT NULL DEFAULT 0.0,
+    run_index INTEGER NOT NULL DEFAULT 1,
+    config_hash TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (method, model, model_version, prompt_id, temperature, run_index)
+);
+"""
+
+CREATE_EVALS = """
+CREATE TABLE IF NOT EXISTS evals (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    paper_id INTEGER NOT NULL,
+    decision TEXT NOT NULL
+        CHECK (decision IN ('in-scope', 'out-of-scope', 'hybrid')),
+    score REAL,
+    confidence REAL,
+    rationale TEXT,
+    matched_keywords TEXT,
+    latency_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (run_id, paper_id),
+    FOREIGN KEY (run_id) REFERENCES eval_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_LLM_JUDGE = """
+CREATE TABLE IF NOT EXISTS llm_judge (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    eval_id INTEGER NOT NULL,
+    judge_model TEXT NOT NULL,
+    judge_prompt_id TEXT NOT NULL DEFAULT '',
+    score REAL,
+    verdict TEXT,
+    rationale TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (eval_id, judge_model, judge_prompt_id),
+    FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
+);
+"""
+
 # Ordered list of CREATE TABLE statements.
 # The order respects foreign key dependencies.
 SCHEMA_STATEMENTS = [
@@ -142,6 +221,11 @@ SCHEMA_STATEMENTS = [
     CREATE_RELEVANCE_EVALS,
     CREATE_RUNS,
     CREATE_DECISIONS,
+    CREATE_GROUND_TRUTH,
+    CREATE_GROUND_TRUTH_CONSENSUS,
+    CREATE_EVAL_RUNS,
+    CREATE_EVALS,
+    CREATE_LLM_JUDGE,
 ]
 
 
@@ -159,6 +243,11 @@ def create_schema(conn: sqlite3.Connection) -> None:
 def drop_all_tables(conn: sqlite3.Connection) -> None:
     """Drop all PUF_RA tables. Use with caution."""
     tables = [
+        "llm_judge",
+        "evals",
+        "eval_runs",
+        "ground_truth_consensus",
+        "ground_truth",
         "decisions",
         "runs",
         "relevance_evals",

@@ -2,48 +2,72 @@
 
 ## Overview
 
-The LLM screening module automates the REVIEW/EXCLUDE decision process for systematic literature reviews. It uses an OpenAI-compatible API to evaluate each paper's relevance based on its title and abstract.
+The LLM screening module classifies each paper into the **three-class scheme** used by
+the study — `in-scope` (physical attack on a PUF), `out-of-scope` (e.g. ML/modeling
+attack), or `hybrid` (side-channel + ML) — using an OpenAI-compatible API. It emits
+**structured JSONL** that feeds the evaluation harness (`src/eval_store`).
+
+> This study *evaluates the tools* (LLM prompts) used to build the SoK paper. The
+> LLM is a screening aid under evaluation, not a co-author.
 
 ## Setup
 
-1. **API endpoint:** Configure via `--base-url` (e.g., `https://llms.innkube.fim.uni-passau.de`).
-2. **API key:** Pass via `--api-key` (not stored in repo).
-3. **Model:** Select via `--model` (e.g., `qwen3-next-80b-a3b-instruct`).
-4. **System prompt:** Provide via `--system-prompt` file path.
+1. **API endpoint:** Configure via `--base-url`.
+2. **API key:** Pass via `--api-key` (not stored in repo; read from `config/eval_models.json`).
+3. **Model:** Select via `--model` from `config/eval_models.json` (configurable; do not hard-code).
+4. **System prompt:** Use one of `config/prompts/p1_zero_shot.txt`, `p2_rubric.txt`, `p3_fewshot.txt`.
 
-## System Prompt Guidelines
+## System Prompt Design
 
-The system prompt should instruct the model to:
-- Return JSON with keys: `decision`, `criterion`, `justification`, `excerpt`.
-- Use `decision` = "REVIEW" or "EXCLUDE".
-- Base decision on the abstract only.
-- Provide a short excerpt from the abstract supporting the decision.
+The three prompts are designed per current best practices (see `docs/prompts.md` and
+`docs/evaluation.md`): durable rules in the system prompt, explicit role framing,
+structured JSON output with a schema, few-shot examples only where the boundary is
+subtle (P3), and the critical "ML/modeling is OUT OF SCOPE" rule repeated at the end
+(recency bias). The model must return:
 
-## Usage
+```json
+{
+  "decision": "in-scope" | "out-of-scope" | "hybrid",
+  "relevance_score": 0.0,
+  "confidence": 0.0,
+  "techniques": ["power analysis"],
+  "rationale": "one sentence"
+}
+```
+
+## Usage (emit eval JSONL)
 
 ```bash
-puf screen \
-  --model qwen3-next-80b-a3b-instruct \
+puf eval screen \
+  --prompt config/prompts/p2_rubric.txt \
+  --model "$MODEL" \
   --api-key "$API_KEY" \
-  --base-url "https://llms.innkube.fim.uni-passau.de" \
+  --base-url "$BASE_URL" \
   --query-ids 3 4 \
-  --system-prompt system_prompt.txt \
-  --max-retries 3
+  --out data/evals/llm_p2_${MODEL}.jsonl \
+  --prompt-id P2
+```
+
+This writes one JSONL line per paper. Ingest it into the database with:
+
+```bash
+puf eval ingest data/evals/*.jsonl
 ```
 
 ## Verification
 
-The `verify_excerpt` function checks that the LLM's claimed excerpt actually appears in the abstract. This guards against hallucinated citations.
-
-## Storage
-
-Decisions are stored in the `decisions` table with:
-- `run_id` — links to the screening run
-- `paper_id` — links to the paper
-- `decision`, `criterion`, `justification`, `excerpt`
-- `excerpt_verified` — boolean
-- `tokens_used` — for cost tracking
+`verify_excerpt` (legacy 2-class path) still checks excerpt presence. For the eval
+path, `screen_to_jsonl` validates that `decision` is one of the three classes and
+writes the fixed schema; invalid responses raise so they can be retried.
 
 ## Dry Run
 
-Use `--dry-run` to print actions without calling the API (useful for testing).
+`puf eval screen --dry-run` writes placeholder JSONL without calling the API.
+
+## Legacy 2-class storage
+
+The older `puf screen` (REVIEW/EXCLUDE) path stores decisions in the `decisions`
+table (`run_id`, `paper_id`, `decision`, `criterion`, `justification`, `excerpt`,
+`excerpt_verified`, `tokens_used`). The evaluation study uses the newer 3-class
+`evals` / `eval_runs` tables instead.
+

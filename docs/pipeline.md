@@ -10,7 +10,7 @@ The pipeline supports:
 1. **Multi-source import** — BibTeX/CSV from ACM, IEEE, Springer, Semantic Scholar
 2. **Deduplication** — DOI-based unique constraint prevents duplicates
 3. **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
-4. **LLM screening** — Automated REVIEW/EXCLUDE decisions using OpenAI-compatible APIs
+4. **LLM screening & evaluation harness** — 3-class (in-scope/out-of-scope/hybrid) screening with OpenAI-compatible APIs, plus a comparison harness that scores deterministic, embedding (SBERT), and LLM-prompt methods against a human ground truth.
 5. **Snowball/backward search** — Recursive expansion via reference chain following (Semantic Scholar / Crossref)
 6. **TUI** — Interactive terminal UI for browsing, filtering, and managing the corpus
 
@@ -67,6 +67,15 @@ LLM screening module. Queries OpenAI-compatible API, verifies excerpts, stores d
 ### `src/snowball.py`
 Backward snowball search. Fetches references via Semantic Scholar API (primary) and Crossref (fallback). Normalises references, deduplicates by DOI/title, creates `snowball_edges`.
 
+### `src/eval_store.py`
+Evaluation storage & analysis. Ingests eval JSONL and ground-truth CSV; computes inter-rater agreement (Cohen's / Fleiss' κ) and consensus; computes per-method metrics (precision/recall/F1, κ, ROC-AUC) vs the gold standard.
+
+### `src/baselines.py`
+Deterministic (keyword / BM25 / hybrid) and optional SBERT baselines; export their scores as eval JSONL consumable by `eval_store`.
+
+### `cli/eval.py`
+Evaluation CLI: `ingest`, `groundtruth`, `metrics`, `runs`, `export-papers`, `baseline`, `screen`.
+
 ### `cli/*.py`
 CLI entry points using argparse. Each subcommand maps to a single module responsibility.
 
@@ -88,10 +97,13 @@ BibTeX files
 [src/relevance.py] → evaluate corpus → populate relevance_evals
     │
     ▼
-[src/screening.py] → LLM decisions → populate decisions
+[src/screening.py] → LLM 3-class decisions → eval JSONL
     │
     ▼
-[src/snowball.py] → fetch references → new papers + edges
+[src/baselines.py] → deterministic / SBERT scores → eval JSONL
+    │
+    ▼
+[src/eval_store.py] → ingest eval JSONL + ground truth → metrics vs consensus
     │
     ▼
 [cli/tui.py] → interactive browsing, filtering, export
@@ -112,12 +124,18 @@ See `database_struct.sql` for the canonical schema. Key tables:
 | `relevance_evals` | Empirical relevance evaluations |
 | `runs` | LLM screening runs |
 | `decisions` | Per-paper LLM decisions |
+| `ground_truth` | Human gold labels (per annotator) |
+| `ground_truth_consensus` | Agreed gold labels + agreement |
+| `eval_runs` | One evaluation configuration (method/model/prompt) |
+| `evals` | Per-paper evaluations (3-class decisions + scores) |
+| `llm_judge` | Optional LLM-as-judge quality scores |
 
 ## Configuration
 
 - `config/snowball.yaml` — Snowball search parameters (depth, max refs, API choice)
+- `config/prompts/*.txt` — the three screening prompts (P1 zero-shot, P2 rubric, P3 few-shot)
+- `config/eval_models.json` — registry of the 3 LLMs used for the 3×3 evaluation grid (configurable, no hard-coded ids)
 - API keys are passed via CLI arguments (not stored in repo)
-- System prompts for LLM screening are passed via file path
 
 ## Error Handling
 

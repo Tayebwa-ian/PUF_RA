@@ -1,13 +1,19 @@
 # PUF Research Pipeline
 
-A systematic literature review (SLR) tool for collecting, deduplicating, evaluating, and screening academic papers on **physical attacks on Physical Unclonable Functions (PUFs)**.
+A toolchain for a Master's-thesis study that **evaluates the tools** (LLM prompts
+and baselines) used to build a Systematication-of-Knowledge (SoK) paper on
+**physical attacks on Physical Unclonable Functions (PUFs)**. It collects,
+deduplicates, scores, and screens papers, then compares screening methods against a
+human ground truth. (The LLMs are screening aids under evaluation — not
+co-authors.)
 
 ## Features
 
 - **Multi-source import** — BibTeX/CSV from ACM, IEEE, Springer, Semantic Scholar
 - **Deduplication** — DOI-based unique constraint prevents duplicates
 - **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
-- **LLM screening** — Automated REVIEW/EXCLUDE decisions using OpenAI-compatible APIs
+- **LLM screening** — 3-class (in-scope / out-of-scope / hybrid) screening using OpenAI-compatible APIs; emits structured JSONL.
+- **Evaluation harness** — compares deterministic, SBERT, and LLM-prompt screening against a human ground truth (Cohen's/Fleiss' κ, precision/recall/F1, ROC-AUC).
 - **Snowball/backward search** — Recursive expansion via reference chain following
 - **Interactive TUI** — Textual-based terminal UI for browsing and filtering
 
@@ -31,6 +37,16 @@ puf screen --model qwen3-next-80b-a3b-instruct \
   --query-ids 3 4 \
   --system-prompt system_prompt.txt
 
+# ---- Evaluation study (see docs/evaluation.md) ----
+puf eval export-papers data/ground_truth/ground_truth_template.csv
+puf eval groundtruth data/ground_truth/ground_truth.csv
+puf eval baseline --method hybrid --out data/evals/baseline_hybrid.jsonl
+puf eval ingest data/evals/*.jsonl
+puf eval screen --prompt config/prompts/p2_rubric.txt --model "$MODEL" \
+  --api-key "$API_KEY" --base-url "$BASE_URL" --query-ids 3 4 \
+  --out data/evals/llm_p2_${MODEL}.jsonl --prompt-id P2
+puf eval metrics <run_id>
+
 # Launch TUI
 puf tui
 ```
@@ -47,6 +63,13 @@ puf screen --model <name> --api-key <key> --base-url <url> --query-ids <ids>
 puf snowball run --query-ids <ids> [--depth 1] [--max-refs 20]
 puf snowball stats
 puf tui
+puf eval ingest <files...>
+puf eval groundtruth <csv>
+puf eval metrics <run_id>
+puf eval runs
+puf eval export-papers <out.csv>
+puf eval baseline --method <keyword|bm25|hybrid|sbert> --out <jsonl>
+puf eval screen --prompt <file> --model <name> --api-key <key> --base-url <url> --query-ids <ids> --out <jsonl>
 ```
 
 ## Project Structure
@@ -62,13 +85,23 @@ PUF_RA/
 │   ├── db_schema.py
 │   ├── relevance.py
 │   ├── screening.py
-│   └── snowball.py
+│   ├── snowball.py
+│   ├── eval_store.py        # Eval/ground-truth ingest, κ, metrics
+│   └── baselines.py         # Deterministic + SBERT baseline JSONL exporters
 ├── cli/                     # CLI entry points
+│   ├── main.py              # Dispatcher: puf <cmd>
 │   ├── import.py
 │   ├── relevance.py
 │   ├── screen.py
 │   ├── snowball.py
-│   └── tui.py
+│   ├── tui.py
+│   └── eval.py              # puf eval <subcommand>
+├── config/
+│   ├── prompts/             # p1_zero_shot.txt, p2_rubric.txt, p3_fewshot.txt
+│   └── eval_models.json     # Configurable LLM registry (3x3 grid)
+├── data/
+│   ├── ground_truth/        # Human gold labels (you + co-annotator)
+│   └── evals/              # Eval JSONL (baselines + LLM prompts)
 ├── tests/                   # Unit tests
 ├── docs/                    # System documentation
 ├── database_struct.sql      # Canonical SQLite schema (v2)
@@ -83,7 +116,10 @@ PUF_RA/
 - `docs/schema.md` — ER diagram and table reference
 - `docs/snowball.md` — Snowball search algorithm and API docs
 - `docs/relevance.md` — Relevance engine methodology
-- `docs/llm_screening.md` — LLM screening setup and prompts
+- `docs/llm_screening.md` — LLM screening setup, 3-class prompts, eval JSONL
+- `docs/evaluation.md` — Evaluation study protocol, metrics, reproducibility
+- `docs/ground_truth_guidelines.md` — Human gold-label contract & format
+- `docs/prompts.md` — Prompt-design rationale & best practices
 - `docs/pipeline.md` — End-to-end data flow
 - `docs/migration.md` — Migrating from v1 schema
 

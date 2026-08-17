@@ -1,0 +1,25 @@
+{
+  "models": [
+    {
+      "id": "open-source-llm-1",
+      "base_url_env": "SCREENING_API_BASE",
+      "api_key_env": "SCREENING_API_KEY",
+      "note": "Placeholder for the first open-source model. Replace 'id' with the real model name when available."
+    },
+    {
+      "id": "open-source-llm-2",
+      "base_url_env": "SCREENING_API_BASE",
+      "api_key_env": "SCREENING_API_KEY",
+      "note": "Placeholder for a second model (e.g. a different open-source family)."
+    },
+    {
+      "id": "frontier-llm-3",
+      "base_url_env": "SCREENING_API_BASE",
+      "api_key_env": "SCREENING_API_KEY",
+      "note": "Placeholder for a third model if a non-open-source option is evaluated."
+    }
+  ],
+  "prompts": ["P1", "P2", "P3"],
+  "prompts_dir": "config/prompts",
+  "note": "LLMs are intentionally configurable and MUST NOT be hard-coded in source. Edit this file to register the 3 models used for the 3x3 = 9 evaluation grid. Secrets come from environment variables, never from this file."
+}

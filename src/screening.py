@@ -25,11 +25,13 @@ import json
 import re
 import sqlite3
 import textwrap
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import openai
 
 from src.db import get_connection
+from src.eval_store import LABELS
 
 # ---------------------------------------------------------------------------
 # HTML / quote normalisation (moved from original run_llm_screening.py)
@@ -259,3 +261,108 @@ def run_screening(
 
     print(f"Screening run {run_id} complete.")
     return run_id
+
+
+# ---------------------------------------------------------------------------
+# Eval-mode screening: classify into the 3-class scheme and emit JSONL
+# ---------------------------------------------------------------------------
+
+def load_prompt(path: str | Path) -> str:
+    """Load a system-prompt file (e.g. config/prompts/p2_rubric.txt)."""
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_eval_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize an LLM JSON response into eval fields."""
+    decision = (result.get("decision") or "").strip().lower()
+    if decision not in LABELS:
+        raise ValueError(f"LLM returned invalid decision: {decision!r}")
+    techniques = result.get("techniques") or []
+    if not isinstance(techniques, list):
+        techniques = [str(techniques)]
+    return {
+        "decision": decision,
+        "score": _to_float(result.get("relevance_score")),
+        "confidence": _to_float(result.get("confidence")),
+        "matched_keywords": techniques,
+        "rationale": result.get("rationale", ""),
+    }
+
+
+def screen_to_jsonl(
+    conn: sqlite3.Connection,
+    client: "openai.OpenAI",
+    model: str,
+    system_prompt: str,
+    out_path: str | Path,
+    query_ids: list[int],
+    prompt_id: str = "P1",
+    model_version: str = "",
+    temperature: float = 0.0,
+    max_retries: int = 3,
+    run: int = 1,
+    dry_run: bool = False,
+) -> int:
+    """Screen papers and write eval JSONL (one line per paper).
+
+    The JSONL matches the schema consumed by
+    ``src.eval_store.ingest_eval_file``. The LLM classifies each paper into the
+    locked three-class scheme (in-scope / out-of-scope / hybrid).
+    """
+    out_path = Path(out_path)
+    papers = get_papers(conn, query_ids)
+    lines_written = 0
+    with out_path.open("w", encoding="utf-8") as fh:
+        for paper_id, title, abstract in papers:
+            if dry_run:
+                record = {
+                    "eval_id": f"eval-{run}-{paper_id}", "paper_id": paper_id,
+                    "title": title, "method": "llm", "model": model,
+                    "model_version": model_version, "prompt_id": prompt_id,
+                    "decision": "out-of-scope", "score": None, "confidence": None,
+                    "matched_keywords": [], "rationale": "[DRY RUN]",
+                    "temperature": temperature, "run": run, "timestamp": "",
+                }
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                lines_written += 1
+                continue
+            for attempt in range(max_retries):
+                try:
+                    res, _tokens = query_llm(
+                        client, model, system_prompt, title, abstract, timeout=60.0
+                    )
+                    ev = _normalize_eval_result(res)
+                    record = {
+                        "eval_id": f"eval-{run}-{paper_id}",
+                        "paper_id": paper_id,
+                        "title": title,
+                        "method": "llm",
+                        "model": model,
+                        "model_version": model_version,
+                        "prompt_id": prompt_id,
+                        "decision": ev["decision"],
+                        "score": ev["score"],
+                        "confidence": ev["confidence"],
+                        "matched_keywords": ev["matched_keywords"],
+                        "rationale": ev["rationale"],
+                        "temperature": temperature,
+                        "run": run,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    lines_written += 1
+                    print(f"  Paper {paper_id}: {ev['decision']} (conf={ev['confidence']})")
+                    break
+                except Exception as exc:
+                    print(f"  attempt {attempt + 1}/{max_retries} failed for paper {paper_id}: {exc}")
+            else:
+                raise RuntimeError(f"Paper {paper_id} failed after {max_retries} attempts")
+    print(f"Wrote {lines_written} eval records to {out_path}")
+    return lines_written

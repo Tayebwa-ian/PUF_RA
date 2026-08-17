@@ -1,0 +1,7 @@
+paper_id,annotator_id,label,confidence,rationale
+12,A,in-scope,0.95,"Power-analysis attack on arbiter PUF via EM traces."
+13,A,out-of-scope,0.90,"LR model trained on 10k CRPs; no physical measurement."
+14,A,hybrid,0.80,"EM leakage features fed to an MLP to recover PUF responses."
+12,B,in-scope,0.90,"Clear side-channel attack on a PUF."
+13,B,out-of-scope,0.85,"Pure modeling attack, CRP-based."
+14,B,hybrid,0.75,"Side-channel + ML combination; borderline."

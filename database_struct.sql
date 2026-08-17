@@ -210,3 +210,120 @@ CREATE TABLE decisions (
     FOREIGN KEY (run_id) REFERENCES runs(id),
     FOREIGN KEY (paper_id) REFERENCES papers(id)
 );
+
+
+-- =====================================================================
+-- 10. GROUND_TRUTH
+-- =====================================================================
+-- Human-curated gold-standard labels. One row per (paper, annotator).
+-- Labels are exactly: 'in-scope' (physical attack on a PUF),
+-- 'out-of-scope' (e.g. ML/modeling attack), 'hybrid' (side-channel + ML).
+--
+-- Relationship: N:1 with papers
+-- =====================================================================
+CREATE TABLE ground_truth (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL,
+    annotator_id TEXT NOT NULL,
+    label TEXT NOT NULL
+        CHECK (label IN ('in-scope', 'out-of-scope', 'hybrid')),
+    confidence REAL,
+    rationale TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (paper_id, annotator_id),
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+
+
+-- =====================================================================
+-- 11. GROUND_TRUTH_CONSENSUS
+-- =====================================================================
+-- Aggregated gold standard: one row per paper after combining annotators.
+-- `consensus_label` is 'in-scope' / 'out-of-scope' / 'hybrid', or 'disagree'
+-- when annotators do not agree (flagged for adjudication).
+--
+-- Relationship: 1:1 with papers
+-- =====================================================================
+CREATE TABLE ground_truth_consensus (
+    paper_id INTEGER NOT NULL PRIMARY KEY,
+    consensus_label TEXT NOT NULL
+        CHECK (consensus_label IN ('in-scope', 'out-of-scope', 'hybrid', 'disagree')),
+    n_annotators INTEGER NOT NULL,
+    n_agree INTEGER NOT NULL,
+    method TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+
+
+-- =====================================================================
+-- 12. EVAL_RUNS
+-- =====================================================================
+-- Groups a set of evaluations produced by one method / model / prompt /
+-- temperature / repetition. A deterministic run key is derived from these
+-- fields so re-ingesting the same JSONL is idempotent.
+--
+-- Relationship: 1:N with evals
+-- =====================================================================
+CREATE TABLE eval_runs (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    method TEXT NOT NULL,                -- 'baseline_keyword'|'baseline_bm25'|'baseline_hybrid'|'sbert'|'llm'
+    model TEXT NOT NULL,                 -- model id, or 'deterministic'
+    model_version TEXT NOT NULL DEFAULT '',
+    prompt_id TEXT NOT NULL DEFAULT '', -- 'P1'|'P2'|'P3'|'n/a'
+    temperature REAL NOT NULL DEFAULT 0.0,
+    run_index INTEGER NOT NULL DEFAULT 1,
+    config_hash TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (method, model, model_version, prompt_id, temperature, run_index)
+);
+
+
+-- =====================================================================
+-- 13. EVALS
+-- =====================================================================
+-- One row per paper evaluation produced by a method/run. The `decision`
+-- uses the SAME three-class label scheme as ground truth so metrics align.
+--
+-- Relationship: N:1 with eval_runs, N:1 with papers
+-- =====================================================================
+CREATE TABLE evals (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    paper_id INTEGER NOT NULL,
+    decision TEXT NOT NULL
+        CHECK (decision IN ('in-scope', 'out-of-scope', 'hybrid')),
+    score REAL,
+    confidence REAL,
+    rationale TEXT,
+    matched_keywords TEXT,               -- JSON list (baselines)
+    latency_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (run_id, paper_id),
+    FOREIGN KEY (run_id) REFERENCES eval_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+
+
+-- =====================================================================
+-- 14. LLM_JUDGE
+-- =====================================================================
+-- Optional LLM-as-judge scores on individual evaluations. Used to audit
+-- the *quality* of rationales/decisions (with bias controls in code).
+--
+-- Relationship: N:1 with evals
+-- =====================================================================
+CREATE TABLE llm_judge (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    eval_id INTEGER NOT NULL,
+    judge_model TEXT NOT NULL,
+    judge_prompt_id TEXT NOT NULL DEFAULT '',
+    score REAL,
+    verdict TEXT,
+    rationale TEXT,
+    created_at TEXT NOT NULL DEFAULT current_timestamp,
+    UNIQUE (eval_id, judge_model, judge_prompt_id),
+    FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
+);
