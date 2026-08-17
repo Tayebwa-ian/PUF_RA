@@ -55,6 +55,7 @@ the paper.
   injection.
 - Tests: are changed behaviors covered? Suggest a test if a gap is obvious
   (do not write it yourself).
+- Documentation: Check if repo wide documentation aligns with implementation
 
 ## Rules
 

@@ -25,9 +25,26 @@ attacks on PUFs. It is the study protocol; follow it *before* tuning anything.
 
 ## 2. Design
 
-**Methods compared (factorial):**
-- Deterministic baseline: `keyword`, `bm25`, `hybrid` (`src/relevance.py`).
-- SBERT embedding baseline (`src/baselines.export_sbert_jsonl`).
+**Methods compared (factorial) — all emit the same 3-class labels.**
+Every method (the deterministic keyword/BM25/hybrid baseline, the SBERT
+embedding baseline, and the 9 LLM configurations) assigns each paper one of the
+three classes `in-scope` / `out-of-scope` / `hybrid`, so metrics are directly
+comparable. **Hybrid rule:** a paper that combines a *physical* side-channel
+measurement *with* ML/modeling (e.g. power/EM traces fed to an ML model) is
+labelled `hybrid`; a pure ML/modeling CRP attack stays `out-of-scope`, and a
+pure physical attack is `in-scope`.
+
+- Deterministic baseline: `keyword`, `bm25`, `hybrid` (`src/relevance.py`) —
+  threshold derivable from ground truth with
+  `src.relevance.derive_threshold(conn, method, criterion="f1"|"youden")`
+  (`puf relevance baseline --derive-threshold`; max-F1 by default, Youden's J
+  optional), falling back to the configurable `0.15` default when no consensus
+  labels exist; writes 3-class decisions into `evals` via `eval_store`.
+- **SBERT embedding baseline — first-class, non-optional.** Its dependencies
+  are installed; `puf relevance sbert` runs it, emits 3-class decisions, and
+  ingests them into `eval_runs` / `evals` (method `sbert`, `eval_runs.model` =
+  the embedding model actually used, default `all-MiniLM-L6-v2`). It is a
+  required comparison point, not an optional extra.
 - **9 LLM configurations = 3 prompts (P1/P2/P3) × 3 LLMs**, configured in
   `config/eval_models.json` (no hard-coded model ids in source).
 
@@ -65,20 +82,40 @@ consumed by `src/eval_store.ingest_eval_file`:
 `decision` is always one of the three labels (matching ground truth), so metrics
 align directly.
 
-## 5. Database
+## 5. Database & the single source of truth for `eval_run_id`
 
-New tables (see `database_struct.sql` / `src/db_schema.py`):
+Tables (see `database_struct.sql` / `src/db_schema.py`):
 - `ground_truth` (per annotator), `ground_truth_consensus` (agreed labels + κ).
 - `eval_runs` (method/model/prompt/temp/repetition — idempotent key),
   `evals` (per-paper 3-class decision + score).
 - `llm_judge` (optional LLM-as-judge quality scores).
+
+**Contract — `eval_runs.id` is the canonical `eval_run_id`.** It is the single
+source of truth for a run:
+- *Every* method's decisions (keyword, BM25, hybrid baseline, SBERT, and all 9
+  LLM configs) live in `evals`, keyed by `evals.run_id = eval_runs.id`. There is
+  one row per `(run_id, paper_id)`.
+- `relevance_evals` is **only** a raw-score detail (per-method continuous
+  scores for the deterministic baselines) — it is *not* where run identity or
+  the authoritative 3-class decisions live. Query `evals` + `eval_runs` for any
+  cross-method comparison.
+- This is what makes the SBERT, deterministic, and LLM results directly
+  comparable under one `eval_run_id` namespace.
+
+Analysis of these results (plots, distributions, per-run metrics) is described in
+[`docs/analysis.md`](analysis.md); the analyst agent computes them via the MCP
+server.
 
 ## 6. Metrics & statistics
 
 For each `eval_runs` row vs the consensus gold standard (`src/eval_store.compute_metrics`):
 - Per-class **Precision / Recall / F1** (macro), overall **accuracy**.
 - **Cohen's κ** between method decisions and consensus.
-- **ROC-AUC** (binary, `in-scope` positive) where a continuous `score` exists.
+- **ROC-AUC** (binary, `in-scope` positive) where a continuous `score` exists,
+  reported as the scalar `auc_in_scope` (no per-threshold curve is stored, so the
+  per-run plot is the 3×3 confusion matrix — `analysis.plot_confusion`).
+- **Threshold derivation** for the deterministic baseline: max-F1 / Youden sweep
+  vs `ground_truth_consensus` (`src.relevance.derive_threshold`).
 - Paired comparisons: **McNemar's test**, **bootstrap CIs**, **Holm–Bonferroni**
   across the 10+ methods.
 - **LLM-as-judge** (optional): pin an *out-of-family* judge model, swap candidate

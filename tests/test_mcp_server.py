@@ -221,6 +221,7 @@ def test_tool_registry_matches_spec():
     assert names == {
         "list_papers", "get_paper", "get_paper_by_doi", "search_papers",
         "get_paper_provenance", "execute_select", "insert_paper",
+        "store_analysis", "list_analysis",
     }
 
 
@@ -262,3 +263,68 @@ def test_execute_select_allows_keyword_inside_string_literal(db):
     assert isinstance(rows, list)
     with pytest.raises(ValueError):
         mcp_server.execute_select("DROP TABLE papers")
+
+
+
+def test_store_analysis_and_list_analysis(db):
+    # First run: insert a new analysis row.
+    rid = mcp_server.store_analysis(
+        name="corpus_summary",
+        result_json='{"papers": 2, "sources": 1}',
+    )
+    assert isinstance(rid, int)
+    listed = mcp_server.list_analysis()
+    assert any(r["name"] == "corpus_summary" for r in listed)
+    row = next(r for r in listed if r["name"] == "corpus_summary")
+    assert row["id"] == rid
+    assert "generated_at" in row
+
+    # Second run with the same name: upsert (INSERT OR REPLACE) keeps one row.
+    rid2 = mcp_server.store_analysis(
+        name="corpus_summary",
+        result_json='{"papers": 3, "sources": 2}',
+    )
+    listed2 = mcp_server.list_analysis()
+    names = [r["name"] for r in listed2]
+    assert names.count("corpus_summary") == 1
+    # INSERT OR REPLACE retires the old row and mints a fresh autoincrement id,
+    # but the name still identifies exactly one (updated) row.
+    assert any(r["name"] == "corpus_summary" and r["id"] == rid2 for r in listed2)
+
+    # The persisted payload is retrievable via the read-only SELECT guard.
+    payload = mcp_server.execute_select(
+        "SELECT result_json FROM analysis_runs WHERE name = 'corpus_summary'"
+    )
+    assert payload[0]["result_json"] == '{"papers": 3, "sources": 2}'
+
+
+def test_store_analysis_rejects_bad_args(db):
+    with pytest.raises(TypeError):
+        mcp_server.store_analysis(name="x", result_json=123)  # not a str
+    with pytest.raises(ValueError):
+        mcp_server.store_analysis(name="   ", result_json="{}")  # empty name
+
+
+def test_stdlib_store_and_list_analysis(db):
+    called = mcp_server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "store_analysis",
+                "arguments": {"name": "std_tool", "result_json": "{\"ok\": true}"},
+            },
+        }
+    )
+    assert called["result"]["isError"] is False
+    rid = called["result"]["structuredContent"]["result"]
+    assert isinstance(rid, int)
+
+    listed = mcp_server.handle_message(
+        {"jsonrpc": "2.0", "id": 11, "method": "tools/call",
+         "params": {"name": "list_analysis", "arguments": {}}}
+    )
+    assert listed["result"]["isError"] is False
+    names = [r["name"] for r in listed["result"]["structuredContent"]["result"]]
+    assert "std_tool" in names

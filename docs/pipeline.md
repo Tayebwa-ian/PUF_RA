@@ -50,13 +50,19 @@ Database connection management with context manager, common query helpers.
 Schema definition and migration utilities. Holds all CREATE TABLE statements and a migration path from v1 to v2.
 
 ### `src/bibtex_parser.py`
-Custom BibTeX parser. Extracted from the original `run_bibtex_to_csv.py`. Supports `{value}`, `"value"`, and raw delimiters with brace-depth tracking.
+Custom BibTeX parser. Supports `{value}`, `"value"`, and raw delimiters with brace-depth tracking. (The legacy root script `run_bibtex_to_csv.py` that wrapped an earlier copy of this parser was **deleted in TASK-004**; BibTeX import now flows through `cli/import` → `src/bibtex_importer.py`.)
 
 ### `src/bibtex_importer.py`
 Direct BibTeX → SQLite importer. Handles upsert by DOI, junction table population, and source/query registration.
 
 ### `src/csv_importer.py`
-CSV → SQLite importer. Supports ACM and IEEE CSV formats. Refactored from `run_csv_to_db.py`.
+CSV → SQLite importer. Supports ACM and IEEE CSV formats. (The legacy root script `run_csv_to_db.py` that this module was factored from was **deleted in TASK-004**; CSV import now flows through `cli/import` → `src/csv_importer.py`, and citation ingestion through `scripts/ingest_citations.py`.)
+
+### `src/mcp_server.py`
+Read-only MCP (stdio) server that is the **safe, supported way to query and analyse the database** without handing out raw SQL. It exposes read tools `execute_select`, `get_paper_provenance`, `list_papers`, `search_papers`, `get_paper_by_doi` (plus `store_analysis` / `list_analysis` for persisting analysis results). `execute_select` rejects anything but SELECT statements and opens a read-only connection.
+
+### `src/analysis.py`
+Statistics over the corpus, 3-class relevance distribution, snowball status, and per-run evaluation metrics (vs `ground_truth_consensus`). Queries the DB through the MCP server with a direct-SQLite fallback and persists results via `store_analysis`. Exposed as `cli/analyze.py` (`puf analyze`).
 
 ### `src/rate_limiter.py`
 Smart client-side rate limiting: minimum call spacing, adaptive widening while failures persist, `Retry-After` parsing (seconds or HTTP date), exponential backoff with jitter, and `RateLimitError` once the retry budget is spent.
@@ -97,19 +103,22 @@ BibTeX files
 [src/bibtex_importer.py] → upsert to papers, link to queries/sources
     │
     ▼
-[src/relevance.py] → evaluate corpus → populate relevance_evals
+[src/relevance.py] → evaluate corpus → 3-class relevance_class + eval_runs/evals
     │
     ▼
 [src/screening.py] → LLM 3-class decisions → eval JSONL
     │
     ▼
-[src/baselines.py] → deterministic / SBERT scores → eval JSONL
+[src/baselines.py] → deterministic + SBERT 3-class scores → eval JSONL
     │
     ▼
 [src/eval_store.py] → ingest eval JSONL + ground truth → metrics vs consensus
     │
     ▼
-[cli/tui.py] → interactive browsing, filtering, export
+[src/analysis.py] → corpus/relevance/snowball/evaluation stats → JSON+PNG (data/analysis) + store_analysis
+    │
+    ▼
+[cli/tui.py] / MCP server (src/mcp_server.py) → interactive browsing, safe read-only DB query
 ```
 
 ## Database Schema (v2)

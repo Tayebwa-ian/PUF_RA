@@ -62,6 +62,7 @@ evaluates is itself the object of study.
 | `git-manager` | subagent | Stages/commits, branches/PRs (read-only on code) | orchestrator (Task) |
 | `researcher` | subagent | Surveys SOTA sources, posts `RESEARCH` findings (read-only) | orchestrator (Task) |
 | `architect` | subagent | Evaluates design vs standards/research, posts `ARCH` recs (read-only) | orchestrator (Task) |
+| `analyst` | subagent (realised via a `coder`/`general` subagent following `.kilo/agent/analyst.md`) | Computes corpus/relevance/snowball/evaluation statistics; queries DB via MCP, plots, persists via `store_analysis` | orchestrator (Task) |
 
 ## Message board (shared state)
 
@@ -75,6 +76,20 @@ entries; the orchestrator is the single router. Protocol: see the
   → GIT**. The orchestrator forwards each handoff.
 - Design flows as: **RESEARCH (researcher) → ARCH (architect) → TASK
   (coder/debugger)**. Findings become delegatable recommendations.
+
+- **Timestamps & status lifecycle:**
+  - **Timestamps (mandatory):** every entry's `Created` and `Updated` MUST be an
+    exact ISO-8601 datetime with timezone offset (e.g. `2026-08-17T13:39:05+02:00`),
+    never a date-only value. This lets us trace posting order and archive the board in order.
+  - **Status lifecycle:** an agent sets its entry to `DONE` as soon as its assigned
+    work is finished — the tester stamps `DONE` (not just `PASS`) once the suite is
+    green; the code-reviewer stamps `DONE` (not just `APPROVED`) once approved;
+    `BUG`/`CODER`/`RESEARCH`/`ARCH` likewise `DONE` on completion. `PASS` /
+    `APPROVED` / `CHANGES_REQUESTED` are TRANSIENT states.
+  - **Orchestrator reconciliation:** when a parent `TASK-` is complete, the
+    orchestrator stamps ALL its child `PASS` / `APPROVED` / `CHANGES_REQUESTED`
+    entries to `DONE`. (`WONT_FIX` is also terminal.) This keeps the board
+    archivable, since `condense` archives only `DONE`/`WONT_FIX`.
 
 ## Standard pipeline (orchestrator)
 
@@ -109,6 +124,7 @@ orchestrator periodically triages them.
 | `/architect [area]` | orchestrator → architect | Design evaluation + recs |
 | `/commit [files]` | orchestrator → git-manager | Commit reviewed-green changes |
 | `/condense [--apply]` | orchestrator → condense | Compact the agent message board (archive resolved, condense open, write STATE.md). |
+| `/analyze [corpus|relevance|snowball|evaluation|all] [--name X] [--db results.db] [--out-dir data/analysis] [--mode auto|mcp|direct]` | orchestrator → analyst | Compute study statistics via MCP; write JSON + PNG to data/analysis and persist via store_analysis. |
 
 ## Skills (repeatable tasks)
 
@@ -121,6 +137,10 @@ orchestrator periodically triages them.
 - `research` — how the researcher surveys SOTA and posts findings.
 - `architecture-review` — how the architect evaluates design and posts recs.
 - `condense` — board condensation protocol (`/condense`, `puf condense`).
+- `analysis` — the analyst agent role (`.kilo/agent/analyst.md`) + the `/analyze`
+  command (`cli/analyze.py`) for corpus/relevance/snowball/evaluation statistics
+  (docs/analysis.md). No `.kilo/skill/analysis/` directory: the persona file and
+  the command are the reference.
 
 ## Project quick facts
 

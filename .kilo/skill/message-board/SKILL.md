@@ -39,12 +39,28 @@ number). Minimal template:
 - To: <target-agent> | ALL
 - Status: OPEN | IN_PROGRESS | BLOCKED | DONE | WONT_FIX
 - Priority: high | normal | low
-- Created: YYYY-MM-DD
-- Updated: YYYY-MM-DD
+- Created: 2026-08-17T13:39:05+02:00
+- Updated: 2026-08-17T13:39:05+02:00
 - Body: |
   What happened, with the minimal relevant snippet and repo-relative file paths.
 - Result: one-line outcome (when DONE)
 ```
+
+
+## Timestamps & status lifecycle
+
+- **Timestamps (mandatory):** every entry's `Created` and `Updated` MUST be an
+  exact ISO-8601 datetime with timezone offset (e.g. `2026-08-17T13:39:05+02:00`),
+  never a date-only value. This lets us trace posting order and archive the board in order.
+- **Status lifecycle:** an agent sets its entry to `DONE` as soon as its assigned
+  work is finished — the tester stamps `DONE` (not just `PASS`) once the suite is
+  green; the code-reviewer stamps `DONE` (not just `APPROVED`) once approved;
+  `BUG`/`CODER`/`RESEARCH`/`ARCH` likewise `DONE` on completion. `PASS` /
+  `APPROVED` / `CHANGES_REQUESTED` are TRANSIENT states.
+- **Orchestrator reconciliation:** when a parent `TASK-` is complete, the
+  orchestrator stamps ALL its child `PASS` / `APPROVED` / `CHANGES_REQUESTED`
+  entries to `DONE`. (`WONT_FIX` is also terminal.) This keeps the board
+  archivable, since `condense` archives only `DONE`/`WONT_FIX`.
 
 ## Routing (automatic forwarding)
 

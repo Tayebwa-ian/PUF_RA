@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from src.db import get_connection
-from src.relevance import evaluate_corpus, evaluate_paper, get_relevance_stats
+from src.relevance import (
+    derive_threshold,
+    evaluate_corpus,
+    evaluate_paper,
+    get_relevance_stats,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +42,41 @@ def main(argv: list[str] | None = None) -> int:
     stats_parser = subparsers.add_parser("stats", help="Show relevance statistics")
     stats_parser.add_argument("--db", default="results.db", help="SQLite database path")
 
+    # Export a deterministic baseline and ingest it as canonical evals
+    baseline_parser = subparsers.add_parser(
+        "baseline", help="Export deterministic baseline -> eval JSONL -> evals"
+    )
+    baseline_parser.add_argument("--method", choices=["keyword", "bm25", "hybrid"], default="hybrid")
+    baseline_parser.add_argument("--threshold", type=float, default=0.15)
+    baseline_parser.add_argument("--out", type=Path, default=None, help="Output JSONL (default data/evals/baseline_<method>_<run>.jsonl)")
+    baseline_parser.add_argument("--run", type=int, default=1)
+    baseline_parser.add_argument("--db", default="results.db", help="SQLite database path")
+    baseline_parser.add_argument(
+        "--derive-threshold",
+        action="store_true",
+        help=(
+            "Derive the decision threshold from ground_truth_consensus instead of "
+            "using --threshold (falls back to --threshold when there is no usable "
+            "ground truth)"
+        ),
+    )
+    baseline_parser.add_argument(
+        "--criterion",
+        choices=["f1", "youden"],
+        default="f1",
+        help="Criterion optimised by --derive-threshold (default: max-F1)",
+    )
+
+    # Export the SBERT baseline and ingest it as canonical evals
+    sbert_parser = subparsers.add_parser(
+        "sbert", help="Export SBERT baseline -> eval JSONL -> evals"
+    )
+    sbert_parser.add_argument("--model", default="all-MiniLM-L6-v2", help="SBERT model name")
+    sbert_parser.add_argument("--threshold", type=float, default=0.3)
+    sbert_parser.add_argument("--out", type=Path, default=None, help="Output JSONL (default data/evals/sbert_<model>_<run>.jsonl)")
+    sbert_parser.add_argument("--run", type=int, default=1)
+    sbert_parser.add_argument("--db", default="results.db", help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     if args.command == "evaluate":
@@ -48,15 +89,15 @@ def main(argv: list[str] | None = None) -> int:
                 threshold=args.threshold,
                 store=not args.no_store,
             )
-        relevant = sum(1 for _, _, is_rel, _ in results if is_rel)
+        relevant = sum(1 for _, _, is_rel, _rel_class, _ in results if is_rel)
         print(f"Evaluated {len(results)} papers. Relevant: {relevant}, Irrelevant: {len(results) - relevant}")
 
     elif args.command == "paper":
         with get_connection(args.db) as conn:
-            score, is_relevant, details = evaluate_paper(
+            score, is_relevant, relevance_class, details = evaluate_paper(
                 conn, args.paper_id, method=args.method, threshold=args.threshold
             )
-        print(f"Paper {args.paper_id}: score={score:.4f}, relevant={is_relevant}")
+        print(f"Paper {args.paper_id}: score={score:.4f}, relevant={is_relevant}, class={relevance_class}")
         print(f"  Details: {details}")
 
     elif args.command == "stats":
@@ -64,6 +105,48 @@ def main(argv: list[str] | None = None) -> int:
             stats = get_relevance_stats(conn)
         for k, v in stats.items():
             print(f"  {k}: {v}")
+
+    elif args.command == "baseline":
+        from src import baselines
+        from src import eval_store
+
+        out = args.out or (Path("data/evals") / f"baseline_{args.method}_{args.run}.jsonl")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        threshold = args.threshold
+        with get_connection(args.db) as conn:
+            if args.derive_threshold:
+                derived = derive_threshold(
+                    conn, method=args.method, criterion=args.criterion
+                )
+                if derived is None:
+                    print(
+                        "No usable ground truth (ground_truth_consensus): keeping "
+                        f"threshold {threshold}."
+                    )
+                else:
+                    threshold = derived
+                    print(
+                        f"Derived threshold ({args.criterion}) from ground truth: "
+                        f"{threshold:.4f}"
+                    )
+            n = baselines.export_baseline_jsonl(
+                conn, out, method=args.method, threshold=threshold, run=args.run
+            )
+            res = eval_store.ingest_eval_file(conn, out)
+        print(f"Baseline {args.method}: wrote {n} record(s) to {out}; ingested {res['evals']} eval(s) into run(s)={res['runs']} (threshold={threshold}).")
+
+    elif args.command == "sbert":
+        from src import baselines
+        from src import eval_store
+
+        out = args.out or (Path("data/evals") / f"sbert_{args.model}_{args.run}.jsonl")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with get_connection(args.db) as conn:
+            n = baselines.export_sbert_jsonl(
+                conn, out, model_name=args.model, threshold=args.threshold, run=args.run
+            )
+            res = eval_store.ingest_eval_file(conn, out)
+        print(f"SBERT {args.model}: wrote {n} record(s) to {out}; ingested {res['evals']} eval(s) into run(s)={res['runs']}.")
 
     return 0
 

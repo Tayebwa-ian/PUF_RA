@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS papers (
     pdf_url TEXT,
     is_relevant BOOLEAN DEFAULT NULL,
     relevance_score REAL,
+    relevance_class TEXT,
     created_at TEXT NOT NULL DEFAULT current_timestamp,
     updated_at TEXT NOT NULL DEFAULT current_timestamp
 );
@@ -99,6 +100,7 @@ CREATE TABLE IF NOT EXISTS relevance_evals (
     score REAL NOT NULL,
     is_relevant BOOLEAN NOT NULL,
     threshold REAL NOT NULL,
+    decision TEXT,
     details TEXT,
     evaluated_at TEXT NOT NULL DEFAULT current_timestamp,
     FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
@@ -265,6 +267,15 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 """
 
+CREATE_ANALYSIS_RUNS = """
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    generated_at TEXT NOT NULL DEFAULT current_timestamp,
+    result_json TEXT NOT NULL
+);
+"""
+
 # Ordered list of CREATE TABLE statements.
 # The order respects foreign key dependencies.
 SCHEMA_STATEMENTS = [
@@ -286,6 +297,7 @@ SCHEMA_STATEMENTS = [
     CREATE_EVALS,
     CREATE_LLM_JUDGE,
     CREATE_SCHEMA_MIGRATIONS,
+    CREATE_ANALYSIS_RUNS,
 ]
 
 
@@ -609,3 +621,30 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the base schema and apply any pending forward migrations."""
     create_schema(conn)
     apply_migrations(conn)
+
+
+@register_migration(4, "add_relevance_class")
+def _migration_4_add_relevance_class(conn: sqlite3.Connection) -> None:
+    """Add papers.relevance_class and relevance_evals.decision (3-class scheme).
+
+    Idempotent: each ALTER only runs when the column is missing, so re-applying
+    migrations over an already-migrated database is a no-op. Fresh databases
+    already get ``relevance_class`` from CREATE_PAPERS.
+    """
+    pcols = {row[1] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    if "relevance_class" not in pcols:
+        conn.execute("ALTER TABLE papers ADD COLUMN relevance_class TEXT;")
+    rcols = {row[1] for row in conn.execute("PRAGMA table_info(relevance_evals)").fetchall()}
+    if "decision" not in rcols:
+        conn.execute("ALTER TABLE relevance_evals ADD COLUMN decision TEXT;")
+
+
+@register_migration(5, "add_analysis_runs")
+def _migration_5_add_analysis_runs(conn: sqlite3.Connection) -> None:
+    """Create the analysis_runs table for persisting computed analyses.
+
+    Idempotent: uses CREATE TABLE IF NOT EXISTS so re-applying migrations over
+    an already-migrated database (or a fresh schema that already lists the table
+    in SCHEMA_STATEMENTS) is a no-op.
+    """
+    conn.execute(CREATE_ANALYSIS_RUNS)

@@ -87,7 +87,7 @@ This document records key architectural and design decisions with rationale, alt
 - CSV importer retained for backward compatibility.
 
 **Consequences:**
-- Old scripts (`run_bibtex_to_csv.py`, `run_csv_to_db.py`) deprecated.
+- Old scripts (`run_bibtex_to_csv.py`, `run_csv_to_db.py`) were **deleted in TASK-004**; import now flows through `cli/import` (→ `src/bibtex_importer.py` / `src/csv_importer.py`) and citation ingestion through `scripts/ingest_citations.py`.
 - New codebase is simpler and easier to maintain.
 
 ---

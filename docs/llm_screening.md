@@ -10,6 +10,14 @@ attack), or `hybrid` (side-channel + ML) — using an OpenAI-compatible API. It 
 > This study *evaluates the tools* (LLM prompts) used to build the SoK paper. The
 > LLM is a screening aid under evaluation, not a co-author.
 
+These three classes are **shared by every method in the study** — the
+deterministic keyword/BM25/hybrid baseline, the SBERT embedding baseline, and the
+9 LLM configurations all emit them, so their decisions are comparable under one
+`eval_run_id` namespace (`evals.run_id = eval_runs.id`; see
+[`docs/evaluation.md`](evaluation.md) and [`docs/analysis.md`](analysis.md)). The
+LLM prompts are one of several screening aids under evaluation, not the only
+path.
+
 ## Setup
 
 1. **API endpoint:** Configure via `--base-url`.
@@ -70,4 +78,7 @@ The older `puf screen` (REVIEW/EXCLUDE) path stores decisions in the `decisions`
 table (`run_id`, `paper_id`, `decision`, `criterion`, `justification`, `excerpt`,
 `excerpt_verified`, `tokens_used`). The evaluation study uses the newer 3-class
 `evals` / `eval_runs` tables instead.
+
+All evaluation results (baseline, SBERT, LLM) are analysed together via the
+analyst agent / `/analyze` command — see [`docs/analysis.md`](analysis.md).
 

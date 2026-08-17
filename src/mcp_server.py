@@ -393,6 +393,43 @@ def insert_paper(
     return paper_id
 
 
+def store_analysis(name: str, result_json: str) -> int:
+    """Persist an analysis result as a named row in ``analysis_runs``.
+
+    This is the only intentional write tool besides :func:`insert_paper`: it
+    records the output of the analysis pipeline so results are reproducible and
+    queryable. Uses ``INSERT OR REPLACE`` keyed on ``name`` (upsert) and returns
+    the resulting row id.
+
+    Args:
+        name: Unique analysis name (used as the upsert key).
+        result_json: The analysis payload, already serialised to JSON.
+
+    Returns:
+        The ``analysis_runs.id`` of the inserted/replaced row.
+    """
+    name = _validate_text(name, "name")
+    if not isinstance(result_json, str):
+        raise TypeError("result_json must be a str")
+    with get_connection(_db_path) as conn:
+        cursor = conn.execute(
+            "INSERT OR REPLACE INTO analysis_runs (name, result_json) "
+            "VALUES (?, ?) RETURNING id",
+            (name, result_json),
+        )
+        row_id = int(cursor.fetchone()["id"])
+    return row_id
+
+
+def list_analysis() -> list[dict[str, Any]]:
+    """Return all stored analyses (id, name, generated_at), newest last."""
+    with get_connection(_db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, name, generated_at FROM analysis_runs ORDER BY id"
+        ).fetchall()
+    return _rows_to_dicts(rows)
+
+
 # ---------------------------------------------------------------------------
 # Argument validation helpers
 # ---------------------------------------------------------------------------
@@ -534,6 +571,25 @@ TOOL_SPECS: list[dict[str, Any]] = [
             },
             ["title", "authors", "year", "abstract", "publication_title"],
         ),
+    },
+    {
+        "name": "store_analysis",
+        "handler": store_analysis,
+        "description": (
+            "Persist an analysis result as a named row (INSERT OR REPLACE keyed "
+            "on name) in analysis_runs; returns the row id. The only intentional "
+            "write tool besides insert_paper."
+        ),
+        "inputSchema": _schema(
+            {"name": _STR, "result_json": _STR},
+            ["name", "result_json"],
+        ),
+    },
+    {
+        "name": "list_analysis",
+        "handler": list_analysis,
+        "description": "List all stored analyses (id, name, generated_at).",
+        "inputSchema": _schema({}, []),
     },
 ]
 

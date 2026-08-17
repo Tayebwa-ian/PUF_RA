@@ -1,0 +1,45 @@
+# Board Archive
+
+Resolved entries archived from the agent message board (`.kilo/board/BOARD.archive.md`) by `puf condense`.
+
+- [TASK-001] Physical-attack PUF relevance: rigorous evaluation study — DONE — Implement the IEEE-grade evaluation study (R1-R7). LOCKED DECISIONS:
+- [MSG-001] research: PUF attack taxonomy + LLM-judge biases — DONE — Finding 1 (taxonomy): PUF attacks split into modeling/ML (non-invasive,
+- [MSG-002] arch: redesign relevance evaluation for scientific rigor — DONE — severity: high
+- [TASK-002] Empower agents + SQL MCP + DB build, ingest, snowball — DONE — User request (5 parts):
+- [MSG-003] agent config: shell as current user, never sudo — DONE — Create repo kilo.json (deny sudo, allow shell) and .kilo/agent/{coder,git-manager}.md with the no-sudo policy.
+- [MSG-004] migration framework (forward, data-preserving) — DONE — Enhance src/db_schema.py with a versioned, idempotent, additive migration framework (schema_migrations table + apply_migrations) that never drops user data; add one example forward migration; docs/database_migration.md; tests.
+- [MSG-005] MCP server for SQLite DB — DONE — Create an MCP server (stdio) exposing tools to read/query the SQLite DB (list/get papers, get by DOI, search, provenance, guarded SELECT, optional insert). Add `mcp` dep; stdlib fallback if SDK unavailable. Tests.
+- [MSG-006] ingest query1/query2 into real DB + provenance — DONE — Create ingestion (scripts/ingest_citations.py) over cititations_data/query1 + query2; dedup by DOI AND normalized title; record provenance via paper_queries + paper_sources; idempotent; populate the real results.db. Tests incl. cross-query DOI dedup.
+- [MSG-007] snowballing + smart rate limit + run — DONE — Fix snowball seed bug (v2 has no papers.query_id; use paper_queries); add smart RateLimiter (Retry-After, jitter, adaptive backoff, per-host); dedup by DOI+title; record snowball provenance via paper_sources('snowball') + snowball_edges; multi-membership (query1+query2+snowball = one row, all links); CLI `puf snowball`; run on existing DB, insert deduped. Tests.
+- [TEST-001] Baseline: TASK-002 implementation — DONE — Ran `python -m pytest -q`. Result: 88 passed, 1 skipped. No failures or errors.
+- [REVIEW-001] Review of TASK-002 changes — DONE — All five requirements are substantially met and the full suite is green
+- [BUG-001] ingest title-fallback dedup + minor fixes — DONE — Reviewer (REVIEW-001) flagged: (1) ingest find_existing_paper missing title fallback when DOI absent -> double-insert risk; (2) migrate_from_v1 references non-existent human_decision column; (3) MCP execute_select false-positive on keywords inside string literals; (4) snowball api_calls over-count.
+- [GIT-001] Commit TASK-002 (reviewed + green) — DONE — Committed reviewed-green TASK-002 changes (agent config, MCP server, migration framework, query1/query2 ingestion into results.db, snowballing + run). 91 passed, 1 skipped.
+- [TASK-003] Orchestrator SOP + compact command + snowballing redesign — DONE — Three-part initiative to codify and improve orchestration + snowballing:
+- [MSG-A] Orchestrator SOP (skill + AGENTS note) — DONE — Create .kilo/skill/orchestrator-policy/SKILL.md (plan-then-approve +
+- [MSG-B] Compact command for standard pipeline — DONE — Add a concise orchestrator command/shorthand that runs the standard
+- [MSG-C] Snowballing redesign — DONE — Redesign the snowballing subsystem for scientific rigor and rate-limit
+- [TEST-002] Baseline: TASK-003 — DONE — Ran `python -m pytest -q`. Result: 102 passed, 1 skipped in 58.53s. No failures or errors.
+- [REVIEW-002] Review of TASK-003 — DONE — Verdict: all three requirements are substantially met, but R-B has one
+- [BUG-002] compact archive must merge, not overwrite — DONE — REVIEW-002 flagged R-B blocking: scripts/compact.py overwrote BOARD.archive.md each --apply, losing prior archives. Fixed to merge/dedupe; added regression test.
+- [GIT-002] Commit TASK-003 (reviewed + green) — DONE — Committed reviewed-green TASK-003 (orchestrator SOP, compact command, snowballing redesign + BUG-002 archive fix). 104 passed, 1 skipped.
+- [TASK-004] Rename compact→condense + delete deprecated scripts — DONE — D1: rename compact→condense (files, functions, skill, cli) + add /condense slash command.
+- [MSG-D1] Rename compact→condense + slash command — DONE — Rename compact→condense (behavior identical) using git mv for tracked files; add
+- [MSG-D2] Delete deprecated root scripts — DONE — Delete run_bibtex_to_csv.py, run_csv_to_db.py, run_llm_screening.py (confirmed
+- [MSG-D3] Dedicated snowballing doc — DONE — Create a dedicated snowballing documentation page (handled by another coder
+- [MSG-D4] Assured reference retrieval (no silent failures) — DONE — Ensure reference retrieval fails loudly, not silently (handled by another coder
+- [TEST-003] Baseline: TASK-004 — DONE — Ran `python -m pytest -q`. Result: 109 passed, 1 skipped in 67.72s. No failures or errors.
+- [REVIEW-003] Review of TASK-004 — DONE — D1, D2 and D3 are complete and accurate; D4 is substantially implemented and
+- [BUG-003] snowball assurance: export_unresolved shadow + pending-status — DONE — REVIEW-003 blocked D4: param `export_unresolved` shadowed module fn (CSV not written + run unfinished on RateLimitError); locally-resolved refs stayed 'pending'. Fixed: renamed param to export_path, set status='resolved' at link time, minors addressed.
+- [GIT-003] Commit TASK-004 (reviewed + green) — DONE — Committed reviewed-green TASK-004 (condense slash command, deleted deprecated scripts, snowballing doc, assured retrieval + BUG-003 fix). 112 passed, 1 skipped.
+- [TASK-033] D1 docs / D2 analysis-agent role / D3 analysis module / D4 deps / D5 eval hardening — DONE — Revise TASK-005: coder implements D4 (dependencies) and D5. Other coders later
+- [MSG-E1] docs: study protocol / methodology (D1) — DONE — Write the SoK-evaluation study docs (protocol / PRISMA-style methodology, the
+- [MSG-E2] analysis-agent role (D2) — DONE — Define the analysis-agent role / persona (how it consumes eval_runs/evals +
+- [MSG-E3] analysis module (D3) — DONE — Implement an analysis module (statistics over eval_runs/evals vs consensus:
+- [MSG-E4] dependencies: matplotlib/pandas/sentence-transformers (D4) — DONE — Install matplotlib, pandas, sentence-transformers into .venv; update
+- [MSG-E5] deterministic-eval hardening: SBERT first-class + 3-class alignment (D5) — DONE — SBERT baseline first-class (no optional-posture); unified 3-class _classify
+- [TEST-004] Baseline: TASK-005 — DONE — Ran `python -m pytest -q`. Result: 132 passed, 1 skipped in 156.30s. No failures or errors.
+- [REVIEW-004] Review of TASK-005 — DONE — Verdict: D4 is fully met and D5 is largely met and well tested, but D3's
+- [BUG-004] analysis MCP parse, fib word-boundary, threshold-derivation docs, schema docs — DONE — REVIEW-004 blockers/majors: fixed MCP response parsing (is_error/content, list parse, rejection handling, single session) + added MCP-path test; word-boundary keyword matching (fib no longer matches fiber/fibrosis); implemented derive_threshold (max-F1/Youden) + wired CLI; documented relevance_class/relevance_evals.decision/analysis_runs in schema.md; clarified corpus_by_method counting. Minors addressed.
+- [TEST-005] Baseline: TASK-005 post-BUG-004 — DONE — Ran `python -m pytest -q`. Result: 144 passed, 1 skipped in 167.92s. No failures or errors.
+- [REVIEW-005] Re-review of TASK-005 (post-BUG-004) — DONE — Re-review of the BUG-004 fixes against the two REVIEW-004 blockers and the

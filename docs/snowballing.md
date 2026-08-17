@@ -1,33 +1,41 @@
 # Snowballing — Methodology & Results
 
-> Dedicated companion to [`docs/snowball.md`](snowball.md) (command reference) and
-> [`docs/database_migration.md`](database_migration.md) (schema evolution).
-> This page explains **how** the snowballing was performed for the PUF
-> physical-attacks SoK study and reports the **actual results**, including the
-> assured-retrieval accounting that guarantees no reference is dropped silently.
+Goal: expand the physical-attack PUF corpus via the citation graph in both
+directions, deduplicating every discovered paper against the existing corpus,
+recording full provenance, and giving every harvested reference an explicit,
+auditable outcome (resolved / unrecoverable / pending) so the literature screen
+is reproducible and **nothing is lost silently**.
 
-## Goal
-
-Expand the seed corpus of physical-attack PUF papers by following the citation
-graph in both directions, deduplicating every discovered paper against the
-existing corpus, recording full provenance, and — critically — giving **every**
-harvested reference an explicit, auditable outcome (resolved / unrecoverable /
-pending) so the literature screen is reproducible and nothing is lost silently.
+This page explains **how** the snowballing was performed for the PUF
+physical-attacks SoK study and reports the **actual results**, including the
+assured-retrieval accounting that guarantees no reference is dropped silently.
+See [`docs/database_migration.md`](database_migration.md) for the schema
+evolution that underpins it.
 
 ## Two-phase design (harvest inventory → resolve)
 
 Implemented in `src/reference_store.py`. The redesign deliberately separates
 *inventory* from *resolution*:
 
-1. **Phase 1 — harvest (inventory).** For each seed, the **complete** reference
-   list is fetched from the chosen source and **every** reference — even ones
-   with no DOI, only an unstructured string, or not yet in our DB — is stored in
-   `reference_lists`. This makes the inventory complete and lets a budget-limited
-   run stop at any point and resume later.
-2. **Phase 2 — resolve (bulk).** `resolve_reference_lists(conn, ...)` (or the
-   `resolve=True` tail of `harvest_references`) walks the still-unresolved
-   `reference_lists` rows and resolves them, inserting `papers`, linking
-   `snowball_edges`, and capturing Open-Access PDF links.
+1. **Phase 1 — harvest (inventory).** `harvest_references(conn, seed_paper_ids,
+   direction, source, ...)` fetches, for each seed, the **complete** reference
+   list from the chosen source and stores **every** reference — even ones with no
+   DOI, only an unstructured string, or not yet in our DB — in `reference_lists`.
+   This makes the inventory complete and lets a budget-limited run stop at any
+   point and resume later. The exact source calls are:
+   - backward + crossref: `GET /works/{DOI}` → `message.reference[]`
+   - backward + openalex: `GET /works?filter=doi:{DOI}` → `referenced_works` IDs, batch-resolved
+   - forward + openalex: `GET /works?filter=cites:{openalex_id}` (citing works)
+   - backward + s2: `s2_get_references`
+   A per-parent expression-unique index prevents duplicate inventory rows.
+   Already-known references are resolved locally (creating `snowball_edges`), and
+   the remaining DOI-bearing references are batch-resolved (Crossref per-DOI
+   polite lookups, or OpenAlex `filter=doi:...|...`), inserting `papers`, linking
+   `snowball_edges`, and capturing Open-Access PDF links into `papers.pdf_url`.
+2. **Phase 2 — resolve (bulk).** `resolve_reference_lists(conn, source, ...)`
+   (or the `resolve=True` tail of `harvest_references`) walks **every** unresolved
+   `reference_lists` row that carries a DOI and bulk-resolves it. This implements
+   "store the list, then resolve later / bulk-download".
 
 Because resolution is idempotent (guarded by `resolved_paper_id IS NULL`), a
 `--resolve-only` run can be repeated indefinitely; each pass picks up where the
@@ -40,8 +48,8 @@ against **OUR OWN database** via `local_find_paper` (to `find_existing_paper_id`
 DOI first, then normalised title. A reference already present is linked
 immediately — zero network calls — and only genuinely-unknown references are
 resolved externally. Local-first also prevents re-inserting a paper that was
-found by `query1`, `query2` **and** snowballing: such a paper stays a single
-row and merely accumulates `paper_sources` links.
+found by `query1`, `query2` **and** snowballing: such a paper stays a single row
+and merely accumulates `paper_sources` links.
 
 ## Backward + Forward (TARCiS / PRISMA-S)
 
@@ -51,6 +59,13 @@ row and merely accumulates `paper_sources` links.
 * `--direction {backward,forward,both}` runs one or both; `--both` does backward
   then forward. Result rows are tagged `direction` in `reference_lists`.
 
+Seeding precedence for a run is `seed_paper_ids` (explicit ids) >
+`seed_query_ids` (resolved through the `paper_queries` junction, the v2
+provenance table) > the whole corpus (`SELECT id FROM papers`). Seeds that
+already have outgoing `snowball_edges` are skipped (`skip_expanded=True`) so a
+budget-limited run resumes where the previous one stopped; use `--reexpand` to
+force re-expansion.
+
 The run is logged to `snowball_runs` in a TARCiS-style row
 `(direction, source, seed_count, references_harvested, new_papers, edges,
 api_calls, started_at, finished_at, note)`, and the screening follows the
@@ -58,26 +73,109 @@ PRISMA-S (systematic snowballing) spirit: transparent, auditable, resumable.
 
 ## Batch + smart rate limiting
 
-All external HTTP goes through `src.snowball._get_json` and the shared
-`src.rate_limiter.RateLimiter`:
+All external HTTP goes through the shared `src.rate_limiter.RateLimiter` (used
+by `src.snowball._get_json` on the legacy path and by the reference-store
+resolver):
 
-* **Pacing** — `wait_before_call()` keeps successive requests >= `min_interval`
-  apart (`--delay`).
-* **Server-directed backoff** — on `429`/`5xx`, `Retry-After` (seconds or HTTP
-  date) is honoured, capped at `max_wait`.
-* **Adaptive + jitter** — consecutive failures widen the interval by
-  `backoff_base ** attempt + uniform(0, jitter)`; after `max_retries` it raises
-  `RateLimitError`, which the resolver catches to **stop gracefully** (commit
-  what was found, export the rest) instead of hammering the API.
-* **Budget** — `--max-api-calls` caps requests; the run stops cleanly after
-  committing once the budget is spent. Unprocessed references remain `pending`
-  and are picked up by the next run.
+| Mechanism | Behaviour |
+|-----------|-----------|
+| Pacing | `wait_before_call()` keeps successive requests at least `min_interval` seconds apart (`--delay`). |
+| Adaptive pacing | While consecutive failures accumulate, the interval widens by `backoff_base ** failures` (capped at `max_wait`). |
+| Server-directed backoff | On `429`/`5xx`, `Retry-After` is honoured — integer seconds or HTTP date (`email.utils.parsedate_to_datetime`), capped at `max_wait`. |
+| Exponential backoff + jitter | Without a header: `min(max_wait, backoff_base ** attempt) + uniform(0, jitter)`. |
+| Give up politely | After `max_retries` consecutive failures a `RateLimitError` is raised; the resolver logs it, commits what was found and stops instead of hammering the API. |
+
+Non-retryable HTTP errors (e.g. `404`) are re-raised; the per-paper loop logs
+them and continues with the next seed.
+
+* **Budget** — `--max-api-calls` caps the number of HTTP requests; the run stops
+  cleanly after committing once the budget is spent. Unprocessed references
+  remain `pending` and are picked up by the next run.
+* **Graceful stop** — on `RateLimitError` the run stops gracefully (commits what
+  was found, keeps the rest resumable) rather than crashing; large-scale
+  snowballing is achieved by combining `--delay` with repeated bounded runs,
+  which resume automatically.
+
+## API usage
+
+### Semantic Scholar (primary)
+
+- **Base URL:** `https://api.semanticscholar.org/graph/v1`
+- **Search paper:** `GET /paper/search?query={title}&fields=title,authors,year,abstract,externalIds,publicationVenue&limit=1`
+- **Get references:** `GET /paper/{paper_id}/references?fields=...&limit={n}` where `paper_id` may be `DOI:10.x/y`
+- **Rate limit:** ~100 requests per 5 minutes (free tier); the unauthenticated pool frequently answers `429`
+- **Auth:** None required
+
+A DOI is used directly as the Semantic Scholar identifier (`DOI:10.x/y`), which
+saves one request; papers without a DOI fall back to a title search. Crossref
+uses `GET /works/{DOI}`.
+
+### Crossref (fallback)
+
+- **Base URL:** `https://api.crossref.org/works`
+- **Get work:** `GET /works/{DOI}`
+- **References:** `message.reference` array in the response
+- **Rate limit:** ~50 requests per second (polite pool)
+- **Auth:** None required
+
+Semantic Scholar may not have all papers, especially older or less-cited ones;
+in that case the run stops gracefully with `aborted: 1`. Reference metadata
+quality varies — Crossref references frequently carry only an unstructured
+string (skipped) and few abstracts.
+
+## CLI commands
+
+```bash
+# Snowball the whole corpus, bounded to 40 API requests
+puf snowball --db results.db --depth 1 --max-refs 15 --source semantic_scholar --max-api-calls 40
+
+# Seed from the papers of queries 3 and 4 (paper_queries junction)
+puf snowball run --seed-query-ids 3,4 --depth 1 --max-refs 20
+
+# Seed from explicit papers, no relevance re-run
+puf snowball run --seed-paper-ids 12,44,91 --no-auto-relevance
+
+# Show snowball stats
+puf snowball stats
+
+# Standalone runner with the same options
+python -m scripts.run_snowball --db results.db --depth 1 --max-refs 15 --max-api-calls 40
+```
+
+`run` is the default subcommand, so the first two forms are equivalent.
+`--query-ids 3 4` is still accepted for backwards compatibility. References are
+fetched, normalised (DOI, title, authors, year, abstract, venue), deduplicated,
+and provenance is accumulated; the relevance pipeline re-runs afterwards only
+when new papers were inserted (disable with `--no-auto-relevance`).
+
+Two-phase flags:
+
+* `--harvest-only` stores the inventory without the Phase-2 resolve.
+* `--resolve-only` runs only Phase 2 (idempotent, resumable).
+* `--direction {backward,forward,both}` selects the citation direction.
+* `--source {crossref,openalex,s2}` selects the resolution source (Crossref and
+  OpenAlex are batch-friendly; S2 is backward-only).
+* `--with-pdf` reports the count of papers with a captured `pdf_url`.
+* `--assured` (default `True`) runs the `verify_retrieval` backstop and a
+  final retry of failed rows before export.
+* `--export-unresolved <path>` writes the unresolved-reference CSV (default
+  `snowball_unresolved.csv`).
+
+## Statistics
+
+`run_snowball` returns
+`{'seeds', 'skipped', 'processed', 'discovered', 'new', 'linked', 'edges',
+'api_calls', 'aborted'}`:
+`new` counts inserted papers, `linked` counts already-known papers that gained
+the `snowball` provenance link, and `aborted` is `1` when the API became
+unavailable (graceful stop).
 
 ## Zotero + OA-PDF hooks
 
-* `src.zotero_sync.push_dois_to_zotero(...)` pushes discovered DOIs to a Zotero
-  collection for bulk PDF download. `pyzotero` is optional — when unconfigured
-  it prints a clear message and returns 0 (never crashes).
+* `src.zotero_sync.push_dois_to_zotero(conn, paper_ids, ...)` pushes discovered
+  DOIs to a Zotero collection for bulk PDF download. `pyzotero` is optional — if
+  it is not installed or not configured (`ZOTERO_LIBRARY_ID` / `ZOTERO_API_KEY`),
+  the function prints a clear message and returns 0 (never crashes).
 * `--with-pdf` reports the count of papers with a captured `pdf_url`. OA PDF
   links are taken from OpenAlex `best_oa_location.pdf_url` and Crossref
   `link[].URL` with `application/pdf`.
@@ -86,12 +184,15 @@ All external HTTP goes through `src.snowball._get_json` and the shared
 
 * **Dedup** is by DOI (case-insensitive, resolver prefixes stripped), then by
   normalised title (whitespace-collapsed, lowercased); two papers with
-  *different* non-null DOIs are never merged on title alone.
+  *different* non-null DOIs are never merged on title alone. If neither matches,
+  a new paper row is created and linked to the `snowball` source.
 * A paper found by `query1:ACM`, `query2:IEEE` **and** snowballing is **one
   row** with three `paper_sources` links. Missing metadata (abstract, authors,
   year, DOI) is backfilled on the existing row.
 * `snowball_edges` records each parent->child traversal at `depth`, skipping
-  self- and duplicate edges.
+  self- and duplicate `(child, parent)` edges. Depth 1 = direct reference of a
+  seed; depth 2 = reference of a reference, where the frontier of each depth is
+  the set of children discovered at the previous depth.
 
 ## Migration safety
 
@@ -227,7 +328,6 @@ carry no DOI in the seed's reference metadata.
 
 ## See also
 
-* [`docs/snowball.md`](snowball.md) — full command/CLI reference and rate-limiting detail.
 * [`docs/database_migration.md`](database_migration.md) — additive, idempotent
   migration framework (v1–v3).
 * `src/reference_store.py` — harvest / resolve / `verify_retrieval` implementation.

@@ -1,5 +1,12 @@
 # Schema Documentation — PUF Research Pipeline
 
+> **Safe querying.** The structured way to read this database (without handing
+> out raw SQL) is the read-only MCP server in `src/mcp_server.py`. It exposes
+> `execute_select`, `get_paper_provenance`, `list_papers`, `search_papers`,
+> `get_paper_by_doi`, plus `store_analysis` / `list_analysis`. `execute_select`
+> rejects anything but SELECT and opens a read-only connection. See
+> [`docs/analysis.md`](analysis.md) for how the analyst agent uses it.
+
 ## Entity-Relationship Diagram
 
 ```
@@ -81,8 +88,10 @@
 | publication_title | TEXT | NOT NULL | Journal/conference name |
 | doi | TEXT | UNIQUE, NULLABLE | Digital Object Identifier |
 | keywords | TEXT | NULLABLE | Author keywords |
-| is_relevant | BOOLEAN | DEFAULT NULL | NULL=unevaluated, TRUE=relevant, FALSE=irrelevant |
-| relevance_score | REAL | NULLABLE | Score from relevance engine |
+| is_relevant | BOOLEAN | DEFAULT NULL | Legacy binary flag: NULL=unevaluated, TRUE=`score >= threshold` |
+| relevance_score | REAL | NULLABLE | Continuous score from the relevance engine |
+| relevance_class | TEXT | NULLABLE | **Three-class decision** (`in-scope` / `out-of-scope` / `hybrid`); NULL = unevaluated. Added by migration **v4**; written by `src/relevance.py` (`evaluate_corpus(store=True)`). |
+| pdf_url | TEXT | NULLABLE | PDF location (added by migration v2) |
 | created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Insertion timestamp |
 | updated_at | TEXT | NOT NULL, DEFAULT current_timestamp | Last update timestamp |
 
@@ -116,8 +125,9 @@
 | paper_id | INTEGER | NOT NULL, FK → papers(id) ON DELETE CASCADE | Paper reference |
 | method | TEXT | NOT NULL | 'keyword', 'bm25', or 'llm' |
 | score | REAL | NOT NULL | Relevance score |
-| is_relevant | BOOLEAN | NOT NULL | Derived from threshold |
+| is_relevant | BOOLEAN | NOT NULL | Derived from threshold (legacy binary) |
 | threshold | REAL | NOT NULL | Threshold used |
+| decision | TEXT | NULLABLE | Three-class decision for this raw score (`in-scope` / `out-of-scope` / `hybrid`). Added by migration **v4**. Note: the *authoritative* per-run decisions live in `evals`; `relevance_evals` is raw-score detail only (see `docs/evaluation.md` §5). |
 | details | TEXT | NULLABLE | JSON with matched terms, etc. |
 | evaluated_at | TEXT | NOT NULL, DEFAULT current_timestamp | Evaluation timestamp |
 
@@ -213,6 +223,57 @@ Recomputed on every ground-truth ingest (see `src/eval_store.ingest_ground_truth
 | rationale | TEXT | NULLABLE | Judge reasoning |
 | created_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
 
+### `analysis_runs`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| name | TEXT | NOT NULL, UNIQUE | Analysis name (upsert key, e.g. `analysis_all`) |
+| generated_at | TEXT | NOT NULL, DEFAULT current_timestamp | When the analysis ran |
+| result_json | TEXT | NOT NULL | The full statistics payload as JSON |
+
+Written by the MCP `store_analysis` tool (or `AnalysisClient.store`) and read via
+`list_analysis`; added by migration **v5**. See [`docs/analysis.md`](analysis.md).
+
+### `reference_lists`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| parent_paper_id | INTEGER | NOT NULL, FK → papers(id) ON DELETE CASCADE | Paper whose bibliography this row came from |
+| direction | TEXT | NOT NULL DEFAULT 'backward', CHECK in ('backward','forward') | Snowball direction |
+| ref_index | INTEGER | NULLABLE | Position in the bibliography |
+| ref_doi / ref_title / ref_year / ref_authors / ref_unstructured | TEXT/INTEGER | NULLABLE | Parsed reference fields |
+| resolved_paper_id | INTEGER | NULLABLE, FK → papers(id) ON DELETE SET NULL | Paper this reference resolved to |
+| source | TEXT | NULLABLE | Where the reference metadata came from (e.g. Crossref) |
+| status | TEXT | NOT NULL DEFAULT 'pending', CHECK in ('pending','resolved','unresolved_no_doi','unresolved_title_failed','fetch_error') | Assured-retrieval accounting; added by migration **v3**, plotted by `puf analyze snowball` |
+| discovered_at | TEXT | NOT NULL, DEFAULT current_timestamp | Timestamp |
+
+**Composite UNIQUE index** `uq_reference_lists`: `(parent_paper_id, direction, COALESCE(ref_doi,''), COALESCE(ref_unstructured,''))`.
+
+### `snowball_runs`
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Primary key |
+| direction | TEXT | NULLABLE | `backward` / `forward` |
+| source | TEXT | NULLABLE | API used (e.g. Crossref / Semantic Scholar) |
+| seed_count | INTEGER | NULLABLE | Seed papers processed |
+| references_harvested | INTEGER | NOT NULL DEFAULT 0 | References written to `reference_lists` |
+| new_papers | INTEGER | NOT NULL DEFAULT 0 | Papers newly inserted |
+| edges | INTEGER | NOT NULL DEFAULT 0 | `snowball_edges` rows created |
+| api_calls | INTEGER | NOT NULL DEFAULT 0 | API calls issued |
+| started_at / finished_at | TEXT | NOT NULL DEFAULT current_timestamp / NULLABLE | Run window |
+| note | TEXT | NULLABLE | Free-form note |
+
+Added (with `reference_lists`) by migration **v2**.
+
+### Migration history (`schema_migrations`)
+| Version | Name | Adds |
+|---|---|---|
+| 1 | normalise sources/queries | `sources`, `queries`, junctions |
+| 2 | `add_reference_lists_runs_pdf` | `reference_lists`, `snowball_runs`, `papers.pdf_url` |
+| 3 | `add_reference_lists_status` | `reference_lists.status` |
+| 4 | `add_relevance_class` | `papers.relevance_class`, `relevance_evals.decision` |
+| 5 | `add_analysis_runs` | `analysis_runs` |
+
 ## Index Recommendations
 
 For large corpora (>10K papers), consider adding indexes:
@@ -225,4 +286,5 @@ CREATE INDEX IF NOT EXISTS idx_snowball_child ON snowball_edges(child_paper_id);
 CREATE INDEX IF NOT EXISTS idx_snowball_parent ON snowball_edges(parent_paper_id);
 CREATE INDEX IF NOT EXISTS idx_relevance_paper ON relevance_evals(paper_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_papers_relevance_class ON papers(relevance_class);
 ```

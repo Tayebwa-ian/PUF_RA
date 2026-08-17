@@ -451,3 +451,33 @@ def export_paper_sheet(conn: sqlite3.Connection, out_path: Path) -> int:
             writer.writerow([row["id"], row["doi"] or "", row["title"], "", "", "", ""])
             n += 1
     return n
+
+
+def ingest_eval_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dict[str, int]:
+    """Insert already-parsed eval records into eval_runs + evals.
+
+    Records follow the same schema as JSONL files consumed by
+    :func:`ingest_eval_file`. This lets callers (e.g. the deterministic baseline
+    in ``src.relevance``) ingest in-memory results without round-tripping through
+    a JSONL file. Returns a summary dict with counts of runs and evals inserted.
+    """
+    n_runs = 0
+    n_evals = 0
+    seen_runs: set[tuple] = set()
+    for record in records:
+        key = _run_key(
+            record.get("method", "unknown"),
+            record.get("model", "unknown"),
+            record.get("model_version", ""),
+            record.get("prompt_id", "n/a"),
+            record.get("temperature", 0.0),
+            record.get("run", 1),
+        )
+        run_id = _get_or_create_run(conn, key)
+        if key not in seen_runs:
+            seen_runs.add(key)
+            n_runs += 1
+        _upsert_eval(conn, run_id, record)
+        n_evals += 1
+    conn.commit()
+    return {"runs": n_runs, "evals": n_evals}

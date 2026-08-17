@@ -4,7 +4,9 @@ Produces eval JSONL files from non-LLM baselines so they can be ingested into
 the database alongside the LLM-prompt evaluations.
 
 - Deterministic baselines: keyword / BM25 / hybrid from ``src.relevance``.
-- SBERT baseline: embedding similarity (optional; requires ``sentence-transformers``).
+- SBERT baseline: embedding similarity with ``sentence-transformers`` — a
+  **first-class, non-optional** method of the study (its dependencies are
+  installed; see ``docs/evaluation.md``). Default model: ``all-MiniLM-L6-v2``.
 
 All exporters write the same JSONL schema consumed by
 ``src.eval_store.ingest_eval_file``.
@@ -19,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.relevance import evaluate_corpus
+from src.relevance import evaluate_corpus, _baseline_eval_records, _classify
 
 TOPIC_SENTENCE = (
     "physical attack on physically unclonable function side-channel analysis "
@@ -46,10 +48,13 @@ def export_baseline_jsonl(
 ) -> int:
     """Run the deterministic relevance engine and write eval JSONL.
 
-    The baseline yields a continuous score, so the 3-class decision is mapped
-    from the threshold (in-scope if relevant, else out-of-scope). ``hybrid`` is
-    not distinguished by this baseline — a known limitation documented in the
-    evaluation report.
+    The 3-class decision (in-scope / out-of-scope / hybrid) is produced by the
+    shared ``_classify`` rule, so it aligns exactly with ``evaluate_corpus`` and
+    the SBERT baseline. The record dicts come from the *same* helper
+    (``relevance._baseline_eval_records``) that ``evaluate_corpus`` ingests with,
+    so the JSONL and the in-memory ingestion can never drift. Nothing is
+    persisted here (``store=False``); ingest the file with
+    ``eval_store.ingest_eval_file``.
     """
     results = evaluate_corpus(
         conn,
@@ -59,26 +64,7 @@ def export_baseline_jsonl(
         threshold=threshold,
         store=False,
     )
-    records = []
-    for paper_id, score, is_relevant, details in results:
-        matched = list((details.get("keyword_details") or {}).get("matched", {}).keys())
-        records.append({
-            "eval_id": f"eval-{run}-{paper_id}",
-            "paper_id": paper_id,
-            "title": "",
-            "method": f"baseline_{method}",
-            "model": "deterministic",
-            "model_version": "",
-            "prompt_id": "n/a",
-            "decision": "in-scope" if is_relevant else "out-of-scope",
-            "score": score,
-            "confidence": None,
-            "matched_keywords": matched,
-            "rationale": f"hybrid score {score:.4f} vs threshold {threshold}",
-            "temperature": 0.0,
-            "run": run,
-            "timestamp": "",
-        })
+    records = _baseline_eval_records(results, method, threshold, run)
     return _write_records(out_path, records)
 
 
@@ -91,17 +77,14 @@ def export_sbert_jsonl(
 ) -> int:
     """Embed abstracts and a topic sentence; write similarity-based eval JSONL.
 
-    Requires ``sentence-transformers`` (optional dependency). Raises a clear
-    error if it is not installed.
+    ``sentence-transformers`` is a first-class dependency (installed in the
+    project venv), so this no longer raises when the import is missing. The
+    default model is ``all-MiniLM-L6-v2`` (the one documented in
+    ``docs/relevance.md`` / ``docs/evaluation.md``); ``eval_runs.model`` records
+    the model name that was actually used.
     """
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-        import torch  # type: ignore
-    except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError(
-            "SBERT baseline requires 'sentence-transformers'. "
-            "Install it (or skip this baseline) to use export_sbert_jsonl."
-        ) from exc
+    from sentence_transformers import SentenceTransformer  # type: ignore
+    import torch  # type: ignore
 
     rows = conn.execute(
         "SELECT id, abstract FROM papers ORDER BY id"
@@ -118,6 +101,7 @@ def export_sbert_jsonl(
     records = []
     for row, sim in zip(rows, cos.tolist()):
         sim_f = float(sim)
+        decision = _classify(row["abstract"] or "", sim_f, threshold)
         records.append({
             "eval_id": f"eval-{run}-{row['id']}",
             "paper_id": row["id"],
@@ -126,7 +110,7 @@ def export_sbert_jsonl(
             "model": model_name,
             "model_version": "",
             "prompt_id": "n/a",
-            "decision": "in-scope" if sim_f >= threshold else "out-of-scope",
+            "decision": decision,
             "score": sim_f,
             "confidence": None,
             "matched_keywords": [],

@@ -323,7 +323,7 @@ Documentation is a first-class artifact. Every design decision, architectural tr
 |---|---|---|
 | `docs/design_decisions.md` | Full design rationale, tradeoffs, alternatives considered | Developers, researchers |
 | `docs/schema.md` | ER diagram, table-by-table column docs, constraints | Developers |
-| `docs/snowball.md` | Snowball search algorithm, API usage, rate limits | Developers |
+| `docs/snowballing.md` | Snowball search methodology, algorithm, API usage, rate limits | Developers |
 | `docs/relevance.md` | Relevance engine methodology, keyword sets, tuning | Researchers |
 | `docs/llm_screening.md` | LLM screening setup, prompts, evaluation | Researchers |
 | `docs/pipeline.md` | End-to-end data flow, module responsibilities | Developers |
@@ -412,7 +412,7 @@ PUF_RA/
 ├── docs/
 │   ├── design_decisions.md                    # full design rationale with alternatives
 │   ├── schema.md                              # ER diagram, table-by-table docs
-│   ├── snowball.md                            # snowball search algorithm & API docs
+│   ├── snowballing.md                         # snowball search methodology, algorithm & API docs
 │   ├── relevance.md                           # relevance engine methodology
 │   ├── llm_screening.md                       # LLM screening setup & evaluation
 │   ├── pipeline.md                            # end-to-end data flow

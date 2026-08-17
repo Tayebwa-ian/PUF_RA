@@ -114,7 +114,7 @@ PUF_RA/
 
 - `docs/design_decisions.md` — Architectural rationale and tradeoffs
 - `docs/schema.md` — ER diagram and table reference
-- `docs/snowball.md` — Snowball search algorithm and API docs
+- `docs/snowballing.md` — Snowball search methodology, algorithm, API docs
 - `docs/relevance.md` — Relevance engine methodology
 - `docs/llm_screening.md` — LLM screening setup, 3-class prompts, eval JSONL
 - `docs/evaluation.md` — Evaluation study protocol, metrics, reproducibility
