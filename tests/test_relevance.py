@@ -405,3 +405,218 @@ def test_evaluate_corpus_no_store_does_not_write_papers():
     ).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM relevance_evals").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM evals").fetchone()[0] == 0
+
+
+
+# ---------------------------------------------------------------------------
+# Phase B: auto-derived, method-specific relevance threshold
+# ---------------------------------------------------------------------------
+
+def test_derive_threshold_returns_sensible_cutoff():
+    """A synthetic ground_truth_consensus yields a sane cutoff in [0, 1]."""
+    conn = _make_db_with_papers(SAMPLE_PAPERS + [FIBER_PAPER])
+    _seed_consensus(
+        conn,
+        {
+            "10.1/p1": "in-scope",
+            "10.1/p3": "in-scope",
+            "10.1/p2": "out-of-scope",
+            "10.1/fiber": "out-of-scope",
+        },
+    )
+    threshold = derive_threshold(conn, method="hybrid", criterion="f1")
+    assert threshold is not None
+    assert 0.0 <= threshold <= 1.0
+
+
+def test_evaluate_corpus_uses_derived_threshold():
+    """With ground truth present, evaluate_corpus applies the derived cutoff
+    (not the 0.15 default) for the keyword baseline method."""
+    pos1 = {
+        "title": "Power Analysis and Side-Channel Probing of PUFs",
+        "authors": "A. Author",
+        "year": 2023,
+        "abstract": (
+            "We present a power analysis and side-channel probing attack on SRAM "
+            "physical unclonable function. Fault injection and laser techniques are "
+            "used; electromagnetic analysis confirms the leakage."
+        ),
+        "publication_title": "IEEE",
+        "doi": "10.1/pos1",
+        "keywords": "puf, side-channel",
+    }
+    pos2 = {
+        "title": "Invasive Delayering Attack on Ring Oscillator PUFs",
+        "authors": "B. Author",
+        "year": 2022,
+        "abstract": (
+            "An invasive delayering attack on ring oscillator physical unclonable "
+            "function is described. Focused ion beam (FIB) is used to extract keys; "
+            "probing completes the attack. We further demonstrate power analysis, "
+            "side-channel fault injection, laser and electromagnetic analysis on the "
+            "same PUF hardware."
+        ),
+        "publication_title": "ACM",
+        "doi": "10.1/pos2",
+        "keywords": "puf, fib",
+    }
+    neg1 = {
+        "title": "A Survey of PUF Types",
+        "authors": "C. Author",
+        "year": 2021,
+        "abstract": (
+            "physical unclonable function arbiter puf ring oscillator ro puf sram "
+            "puf bistable ring puf based memory puf butterfly puf and puf"
+        ),
+        "publication_title": "MDPI",
+        "doi": "10.1/neg1",
+        "keywords": "puf",
+    }
+    neg2 = {
+        "title": "Another PUF Taxonomy",
+        "authors": "D. Author",
+        "year": 2020,
+        "abstract": (
+            "physical unclonable function arbiter puf ring oscillator ro puf sram "
+            "puf bistable ring puf based memory puf butterfly puf and puf"
+        ),
+        "publication_title": "MDPI",
+        "doi": "10.1/neg2",
+        "keywords": "puf",
+    }
+    conn = _make_db_with_papers([pos1, pos2, neg1, neg2])
+    _seed_consensus(
+        conn,
+        {
+            "10.1/pos1": "in-scope",
+            "10.1/pos2": "in-scope",
+            "10.1/neg1": "out-of-scope",
+            "10.1/neg2": "out-of-scope",
+        },
+    )
+
+    derived = derive_threshold(conn, method="keyword")
+    assert derived is not None
+    assert derived != 0.15  # ground truth must move the cutoff off the default
+
+    results = evaluate_corpus(conn, method="keyword", threshold=None, store=False)
+    abstracts = {
+        r["id"]: r["abstract"]
+        for r in conn.execute("SELECT id, abstract FROM papers")
+    }
+    flipped = False
+    for paper_id, score, _is_rel, rel_class, details in results:
+        assert details["threshold"] == derived
+        expected = _classify(abstracts[paper_id], score, derived)
+        assert rel_class == expected
+        if _classify(abstracts[paper_id], score, 0.15) != expected:
+            flipped = True
+    # at least one paper's decision differs from what the 0.15 default would give
+    assert flipped
+
+
+def test_evaluate_corpus_falls_back_to_default_without_ground_truth():
+    conn = _make_db_with_papers(SAMPLE_PAPERS)
+    # no consensus rows -> effective threshold is the 0.15 fallback
+    results = evaluate_corpus(conn, method="keyword", threshold=None, store=False)
+    assert all(details["threshold"] == 0.15 for _, _, _, _, details in results)
+
+
+def test_evaluate_corpus_explicit_threshold_overrides_derivation():
+    conn = _make_db_with_papers(SAMPLE_PAPERS)
+    _seed_consensus(
+        conn,
+        {
+            "10.1/p1": "in-scope",
+            "10.1/p3": "in-scope",
+            "10.1/p2": "out-of-scope",
+        },
+    )
+    # explicit threshold must win over the derived cutoff
+    results = evaluate_corpus(conn, method="keyword", threshold=0.05, store=False)
+    assert all(details["threshold"] == 0.05 for _, _, _, _, details in results)
+
+
+def test_derive_threshold_sbert_uses_embeddings(monkeypatch):
+    """SBERT threshold derivation reuses the embedding scores (mocked)."""
+    import sentence_transformers
+
+    class FakeModel:
+        def encode(self, texts, convert_to_tensor=True):
+            import torch
+
+            vecs = [[1.0, 0.0], [0.0, 1.0], [0.9, 0.1], [0.0, 1.0]]
+            return torch.tensor(vecs[: len(texts)], dtype=torch.float32)
+
+    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", lambda *a, **k: FakeModel())
+
+    conn = _make_db_with_papers(SAMPLE_PAPERS + [FIBER_PAPER])
+    _seed_consensus(
+        conn,
+        {
+            "10.1/p1": "in-scope",
+            "10.1/p3": "in-scope",
+            "10.1/p2": "out-of-scope",
+            "10.1/fiber": "out-of-scope",
+        },
+    )
+    thr = derive_threshold(conn, method="sbert", criterion="f1")
+    assert thr is not None and 0.0 <= thr <= 1.0
+
+
+def test_derive_threshold_sbert_finds_negative_optimum(monkeypatch):
+    """A negative-cosine optimum must be reachable by the threshold sweep."""
+    import src.baselines as baselines
+
+    conn = _make_db_with_papers(SAMPLE_PAPERS + [FIBER_PAPER])
+    _seed_consensus(
+        conn,
+        {
+            "10.1/p1": "in-scope",
+            "10.1/p3": "in-scope",
+            "10.1/p2": "out-of-scope",
+            "10.1/fiber": "out-of-scope",
+        },
+    )
+    ids = {
+        doi: conn.execute("SELECT id FROM papers WHERE doi = ?", (doi,)).fetchone()["id"]
+        for doi in ("10.1/p1", "10.1/p2", "10.1/p3", "10.1/fiber")
+    }
+    # every score is negative; the perfect split sits between -0.5 and -0.2
+    fake = {
+        ids["10.1/p1"]: -0.20,
+        ids["10.1/p3"]: -0.10,
+        ids["10.1/p2"]: -0.50,
+        ids["10.1/fiber"]: -0.60,
+    }
+    monkeypatch.setattr(
+        baselines, "sbert_scores", lambda conn, model=None: list(fake.items())
+    )
+
+    for criterion in ("f1", "youden"):
+        thr = derive_threshold(conn, method="sbert", criterion=criterion)
+        assert thr is not None
+        assert thr < 0.0, f"{criterion}: sweep missed the negative optimum ({thr})"
+        assert -0.5 < thr <= -0.2
+        # the cut-off perfectly separates the curated labels
+        assert fake[ids["10.1/p1"]] >= thr and fake[ids["10.1/p3"]] >= thr
+        assert fake[ids["10.1/p2"]] < thr and fake[ids["10.1/fiber"]] < thr
+
+
+def test_derive_threshold_all_scores_equal_is_degenerate_safe(monkeypatch):
+    """Identical scores (empty range) still yield a usable threshold, not a crash."""
+    import src.baselines as baselines
+
+    conn = _make_db_with_papers(SAMPLE_PAPERS)
+    _seed_consensus(conn, {"10.1/p1": "in-scope", "10.1/p2": "out-of-scope"})
+    ids = {
+        doi: conn.execute("SELECT id FROM papers WHERE doi = ?", (doi,)).fetchone()["id"]
+        for doi in ("10.1/p1", "10.1/p2", "10.1/p3")
+    }
+    monkeypatch.setattr(
+        baselines,
+        "sbert_scores",
+        lambda conn, model=None: [(pid, -0.42) for pid in ids.values()],
+    )
+    thr = derive_threshold(conn, method="sbert", criterion="f1")
+    assert thr is not None and thr <= -0.42

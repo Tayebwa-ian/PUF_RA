@@ -415,11 +415,14 @@ def derive_threshold(
     step: float = 0.01,
     keyword_weight: float = 0.4,
     bm25_weight: float = 0.6,
+    sbert_model: str = "all-MiniLM-L6-v2",
 ) -> Optional[float]:
     """Derive the decision threshold from the human ground truth.
 
-    Sweeps candidate thresholds over ``[0, 1]`` in ``step`` increments and keeps
-    the one that maximises ``criterion`` against ``ground_truth_consensus``:
+    Sweeps candidate thresholds in ``step`` increments over a grid that covers
+    both the conventional ``[0, 1]`` band and the OBSERVED score range (SBERT
+    cosine similarities may be negative), and keeps the one that maximises
+    ``criterion`` against ``ground_truth_consensus``:
 
     * **positive** — consensus label ``in-scope`` or ``hybrid`` (both involve a
       physical attack, i.e. the papers the screen must keep),
@@ -431,7 +434,7 @@ def derive_threshold(
 
     Args:
         conn: SQLite connection.
-        method: Scoring method ('keyword', 'bm25', 'hybrid').
+        method: Scoring method ('keyword', 'bm25', 'hybrid', 'sbert').
         criterion: ``"f1"`` (max-F1, default) or ``"youden"``
             (max sensitivity + specificity - 1).
         step: Sweep granularity in score units (default ``0.01``).
@@ -469,18 +472,37 @@ def derive_threshold(
     if not labelled:
         return None
 
-    scores = dict(_scores_for_corpus(conn, method, keyword_weight, bm25_weight))
+    if method == "sbert":
+        # SBERT cosine-similarity scores come from sentence-transformers, which
+        # may be unavailable or unweighted by keyword_weight/bm25_weight.
+        try:
+            from src.baselines import sbert_scores
+            scored = sbert_scores(conn, sbert_model)
+        except Exception:
+            return None
+        scores = dict(scored)
+    else:
+        scores = dict(_scores_for_corpus(conn, method, keyword_weight, bm25_weight))
     pairs = [(scores[pid], y) for pid, y in labelled.items() if pid in scores]
     n_pos = sum(y for _, y in pairs)
     n_neg = len(pairs) - n_pos
     if n_pos == 0 or n_neg == 0:
         return None  # a sweep needs both classes
 
+    # The candidate grid must cover the OBSERVED score range: SBERT cosine
+    # similarities can be negative, so a grid pinned to [0, 1] would never
+    # consider a negative optimum. The conventional [0, 1] band (keyword / BM25 /
+    # hybrid) is always included, which also keeps the degenerate case (every
+    # score identical) from collapsing into an empty grid.
+    observed = [s for s, _ in pairs]
+    start = min(0.0, min(observed) - 1e-3)
+    end = max(1.0, max(observed) + 1e-3)
+    n_steps = max(1, int(math.ceil((end - start) / step)))
+
     best_threshold: Optional[float] = None
     best_value = -1.0
-    n_steps = int(round(1.0 / step))
     for i in range(n_steps + 1):
-        t = round(i * step, 10)
+        t = round(start + i * step, 10)
         tp = sum(1 for s, y in pairs if s >= t and y == 1)
         fp = sum(1 for s, y in pairs if s >= t and y == 0)
         fn = n_pos - tp
@@ -506,7 +528,7 @@ def evaluate_corpus(
     method: str = "hybrid",
     keyword_weight: float = 0.4,
     bm25_weight: float = 0.6,
-    threshold: float = 0.15,
+    threshold: Optional[float] = None,
     store: bool = True,
     run: int = 1,
 ) -> list[tuple[int, float, bool, str, dict[str, Any]]]:
@@ -532,6 +554,16 @@ def evaluate_corpus(
         ``out-of-scope`` / ``hybrid`` (``is_relevant`` is the legacy binary
         ``score >= threshold`` flag, kept for ``relevance_evals``).
     """
+    # Auto-derive the decision threshold from the human ground truth whenever it
+    # exists; an explicit ``threshold`` still overrides the derivation (so the
+    # 0.15 default only applies when there is no usable ground truth).
+    effective_threshold = threshold
+    if effective_threshold is None:
+        derived = derive_threshold(
+            conn, method=method, keyword_weight=keyword_weight, bm25_weight=bm25_weight
+        )
+        effective_threshold = derived if derived is not None else 0.15
+
     components = _score_components(conn, method, keyword_weight, bm25_weight)
     if not components:
         return []
@@ -542,14 +574,14 @@ def evaluate_corpus(
         abstract = comp["abstract"]
         score = comp["score"]
 
-        is_relevant = score >= threshold
-        relevance_class = _classify(abstract, score, threshold)
+        is_relevant = score >= effective_threshold
+        relevance_class = _classify(abstract, score, effective_threshold)
         details = {
             "keyword_score": comp["keyword_score"],
             "bm25_score": comp["bm25_score"],
             "keyword_details": comp["keyword_details"],
             "method": method,
-            "threshold": threshold,
+            "threshold": effective_threshold,
         }
 
         results.append((paper_id, score, is_relevant, relevance_class, details))
@@ -561,7 +593,7 @@ def evaluate_corpus(
                     (paper_id, method, score, is_relevant, threshold, decision, details)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (paper_id, method, score, is_relevant, threshold, relevance_class, json.dumps(details)),
+                (paper_id, method, score, is_relevant, effective_threshold, relevance_class, json.dumps(details)),
             )
 
     # Update papers table with latest relevance info — only when storing, so

@@ -65,7 +65,7 @@ This document records key architectural and design decisions with rationale, alt
 - LLM scoring can be added later as a third method.
 
 **Consequences:**
-- Threshold tuning required (default 0.15).
+- The decision threshold is **auto-derived from ground truth** (`derive_threshold`, max-F1 / Youden vs `ground_truth_consensus`); the configurable `0.15` is only the **fallback** used when no consensus labels exist. An explicit `--threshold` always overrides the derived value.
 - Topic keyword set must be curated and maintained.
 
 ---
@@ -92,26 +92,28 @@ This document records key architectural and design decisions with rationale, alt
 
 ---
 
-## Decision 5: Snowball via Semantic Scholar API
+## Decision 5: Snowball via Semantic Scholar as a Standalone, First-Class Resolve Source
 
-**Context:** Need to expand literature review by following reference chains.
+**Context:** Need to expand the literature review by following reference chains (backward + forward) and resolving each discovered reference to a `papers` row with full provenance.
 
 **Options Considered:**
-- **A. Semantic Scholar API (recommended):** Free tier, structured reference metadata, DOIs available.
-- **B. Crossref API:** Reliable DOI lookup, but limited reference metadata.
-- **C. Manual PDF parsing:** Too fragile, no scale.
-- **D. arXiv API:** Limited to preprints, not suitable for hardware security.
+- **A. Semantic Scholar API (recommended, standalone):** Free tier, structured reference metadata, DOIs available, no API key. It is a **first-class, standalone** resolve source (alias `s2`) — it resolves references on its own, with **no mandatory Crossref/OpenAlex fallback**.
+- **B. Crossref API:** Reliable DOI lookup, polite pool, but limited reference metadata; the natural *alternate* of OpenAlex.
+- **C. OpenAlex API:** Rich metadata + OA-PDF links, but enforces a daily polite-pool request budget that can be exhausted; the natural *alternate* of Crossref.
+- **D. Manual PDF parsing:** Too fragile, no scale.
+- **E. arXiv API:** Limited to preprints, not suitable for hardware security.
 
-**Decision:** Semantic Scholar API primary, Crossref fallback.
+**Decision:** Semantic Scholar is a **standalone first-class** resolve source (no mandatory Crossref/OpenAlex fallback). Crossref and OpenAlex are *alternates of each other* (a Crossref miss retries OpenAlex and vice-versa). All API traffic is paced by a shared `RateLimiter` (`--delay`, default `1.0s`), and `backfill_abstracts` is resilient (commit-per-paper, guards `RateLimitError`). Single-source resolution is available via `--no-alternate` (see Decision 8).
 
 **Rationale:**
-- Returns structured reference data with DOIs, authors, abstracts.
-- Free tier sufficient for research scale.
-- No API key required.
+- S2 returns structured reference data with DOIs, authors, abstracts, and requires no API key.
+- Standing S2 up as a standalone source removes a hard dependency on any single fallback and lets a run complete even when the alternate source is unavailable.
+- Crossref <-> OpenAlex remain a peer alternate pair so DOI-based resolution still has redundancy when desired.
 
 **Consequences:**
-- Rate limits (~100 req/5min) require pacing.
+- Rate limits (S2 ~100 req/5min) require explicit pacing via `--delay` (default `1.0s`); pacing now applies to **all** API calls through the shared `RateLimiter`, with adaptive backoff on failure and `Retry-After` honouring.
 - Many references may lack DOIs; title-based dedup is best-effort.
+- Resolution is idempotent and resumable; `backfill_abstracts` commits after each paper and never aborts the whole batch on a throttle.
 
 ---
 
@@ -152,3 +154,21 @@ This document records key architectural and design decisions with rationale, alt
 **Consequences:**
 - Documentation is a first-class artifact, not an afterthought.
 - Requires maintenance as code evolves.
+
+## Decision 8: Single-Source Resolution (`--no-alternate`)
+
+**Context:** Crossref and OpenAlex are implemented as *alternates* of each other — a Crossref miss retries OpenAlex (and vice-versa). Semantic Scholar is already standalone. We needed a way to force resolution on a **single** source with no cross-source retry.
+
+**Options Considered:**
+- **A. Always retry the alternate (`--no-alternate` absent):** Maximises recovery; uses OpenAlex as the Crossref fallback and vice-versa.
+- **B. Single-source mode (`--no-alternate`, recommended for constrained runs):** Never fall back to the alternate; an unresolvable DOI is marked `fetch_error` on the chosen source alone.
+
+**Decision:** Support both. The default keeps the Crossref<->OpenAlex alternate retry; `--no-alternate` disables all cross-source retries for any `--source`.
+
+**Rationale / Why it exists:**
+- **OpenAlex budget exhaustion.** OpenAlex's polite pool enforces a daily request budget. Once exhausted, its fallback becomes unavailable and a Crossref-led run can stall. `--no-alternate --source semantic_scholar` (or `--source crossref --no-alternate`) keeps resolution moving on a single source without depending on OpenAlex.
+- **Semantic Scholar preference.** When S2 is the preferred/primary source there is no OpenAlex fallback by design; `--no-alternate` makes the single-source contract explicit and also lets Crossref/OpenAlex be used in isolation when only that source is trustworthy or allowed.
+
+**Consequences:**
+- With `--no-alternate`, only the chosen source is attempted; a failed DOI is recorded as `fetch_error` rather than silently retried cross-source.
+- The run still stops gracefully and stays resumable (idempotent, `verify_retrieval` backstop); the next run can drop `--no-alternate` to fill remaining gaps via the alternate.

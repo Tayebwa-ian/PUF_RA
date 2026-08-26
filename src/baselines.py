@@ -68,6 +68,29 @@ def export_baseline_jsonl(
     return _write_records(out_path, records)
 
 
+def sbert_scores(conn: Any, model_name: str = "all-MiniLM-L6-v2") -> list[tuple[int, float]]:
+    """Return ``(paper_id, cosine_similarity)`` for every paper vs the topic.
+
+    Embeds each abstract and the study topic sentence with ``sentence-transformers``
+    (a first-class dependency) and returns the cosine similarity to the topic.
+    Shared by :func:`export_sbert_jsonl` and the SBERT branch of
+    :func:`src.relevance.derive_threshold`, so threshold derivation can never
+    drift from the baseline export.
+    """
+    from sentence_transformers import SentenceTransformer  # type: ignore
+    import torch  # type: ignore
+
+    rows = conn.execute("SELECT id, abstract FROM papers ORDER BY id").fetchall()
+    if not rows:
+        return []
+    abstracts = [r["abstract"] or "" for r in rows]
+    model = SentenceTransformer(model_name)
+    topic_emb = model.encode([TOPIC_SENTENCE], convert_to_tensor=True)
+    doc_embs = model.encode(abstracts, convert_to_tensor=True)
+    cos = torch.nn.functional.cosine_similarity(doc_embs, topic_emb, dim=1)
+    return [(row["id"], float(sim)) for row, sim in zip(rows, cos.tolist())]
+
+
 def export_sbert_jsonl(
     conn: Any,
     out_path: str | Path,
@@ -83,24 +106,16 @@ def export_sbert_jsonl(
     ``docs/relevance.md`` / ``docs/evaluation.md``); ``eval_runs.model`` records
     the model name that was actually used.
     """
-    from sentence_transformers import SentenceTransformer  # type: ignore
-    import torch  # type: ignore
-
     rows = conn.execute(
         "SELECT id, abstract FROM papers ORDER BY id"
     ).fetchall()
     if not rows:
         return 0
 
-    abstracts = [r["abstract"] or "" for r in rows]
-    model = SentenceTransformer(model_name)
-    topic_emb = model.encode([TOPIC_SENTENCE], convert_to_tensor=True)
-    doc_embs = model.encode(abstracts, convert_to_tensor=True)
-    cos = torch.nn.functional.cosine_similarity(doc_embs, topic_emb, dim=1)
-
+    scores = dict(sbert_scores(conn, model_name))
     records = []
-    for row, sim in zip(rows, cos.tolist()):
-        sim_f = float(sim)
+    for row in rows:
+        sim_f = scores.get(row["id"], 0.0)
         decision = _classify(row["abstract"] or "", sim_f, threshold)
         records.append({
             "eval_id": f"eval-{run}-{row['id']}",

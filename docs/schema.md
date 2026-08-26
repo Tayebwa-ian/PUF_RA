@@ -2,9 +2,11 @@
 
 > **Safe querying.** The structured way to read this database (without handing
 > out raw SQL) is the read-only MCP server in `src/mcp_server.py`. It exposes
-> `execute_select`, `get_paper_provenance`, `list_papers`, `search_papers`,
-> `get_paper_by_doi`, plus `store_analysis` / `list_analysis`. `execute_select`
-> rejects anything but SELECT and opens a read-only connection. See
+> `execute_select`, `get_paper`, `get_paper_provenance`, `insert_paper`,
+> `list_papers`, `search_papers`, `get_paper_by_doi`, plus `store_analysis` /
+> `list_analysis`. `execute_select` rejects anything but a read-only `SELECT` and
+> opens a read-only connection; it also permits a leading `WITH` (read-only
+> common-table expression) in addition to a bare `SELECT`. See
 > [`docs/analysis.md`](analysis.md) for how the analyst agent uses it.
 
 ## Entity-Relationship Diagram
@@ -123,7 +125,7 @@
 |---|---|---|---|
 | id | INTEGER | PK, AUTOINCREMENT | Primary key |
 | paper_id | INTEGER | NOT NULL, FK → papers(id) ON DELETE CASCADE | Paper reference |
-| method | TEXT | NOT NULL | 'keyword', 'bm25', or 'llm' |
+| method | TEXT | NOT NULL | 'keyword', 'bm25', 'hybrid', or 'llm' |
 | score | REAL | NOT NULL | Relevance score |
 | is_relevant | BOOLEAN | NOT NULL | Derived from threshold (legacy binary) |
 | threshold | REAL | NOT NULL | Threshold used |
@@ -268,7 +270,7 @@ Added (with `reference_lists`) by migration **v2**.
 ### Migration history (`schema_migrations`)
 | Version | Name | Adds |
 |---|---|---|
-| 1 | normalise sources/queries | `sources`, `queries`, junctions |
+| 1 | `add_papers_notes_column` | `papers.notes` |
 | 2 | `add_reference_lists_runs_pdf` | `reference_lists`, `snowball_runs`, `papers.pdf_url` |
 | 3 | `add_reference_lists_status` | `reference_lists.status` |
 | 4 | `add_relevance_class` | `papers.relevance_class`, `relevance_evals.decision` |

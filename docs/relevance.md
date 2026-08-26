@@ -43,17 +43,23 @@ Curated from domain expertise, organised by category:
    by category.
 3. **BM25 scoring:** Build a corpus from all abstracts. Compute BM25 score of each abstract against the concatenated topic keyword set.
 4. **Composite score:** `score = 0.4 * normalized_keyword_score + 0.6 * BM25_score`
-5. **Threshold (derivable):** the cut-off used by the fall-back branch of the
-   3-class rule is either the configurable default (`--threshold`, `0.15`) or
-   **derived from ground truth** by
-   `derive_threshold(conn, method, criterion="f1"|"youden", step=0.01)`: it
-   sweeps `[0, 1]` and maximises F1 (or sensitivity+specificity−1) against
-   `ground_truth_consensus`, with `in-scope`/`hybrid` as positives,
-   `out-of-scope` as negatives and `disagree` skipped. It returns `None` (→ keep
-   the default) when there is no usable ground truth, and it never writes to the
-   database (scores come from `_scores_for_corpus`). When storing, the engine
-   writes the 3-class `relevance_class` onto `papers` and ingests decisions into
-   `eval_runs` / `evals`; with `store=False` nothing is persisted.
+5. **Threshold (auto-derived per method from ground truth):** whenever
+   `ground_truth_consensus` has rows, the cut-off used by the fall-back branch of
+   the 3-class rule is **derived automatically** by
+   `derive_threshold(conn, method, criterion="f1"|"youden", step=0.01)` — this is
+   done internally by `evaluate_corpus`, `puf relevance baseline` and
+   `puf relevance sbert`, so the same threshold that was optimised against the
+   curated labels is the one applied to the corpus. The sweep covers the `[0, 1]`
+   band **and** the observed score range (SBERT cosine scores may be negative,
+   so a negative cut-off is reachable) and maximises F1 (or sensitivity+specificity−1) against `ground_truth_consensus`,
+   with `in-scope`/`hybrid` as positives, `out-of-scope` as negatives and `disagree`
+   skipped. It returns `None` (→ keep the default `0.15` for keyword/BM25/hybrid,
+   `0.3` for SBERT) when there is no usable ground truth, and it never writes to
+   the database (scores come from `_scores_for_corpus`, or from
+   `sentence_transformers` for the SBERT branch). An explicit `--threshold` always
+   overrides the derived value. When storing, the engine writes the 3-class
+   `relevance_class` onto `papers` and ingests decisions into `eval_runs` / `evals`;
+   with `store=False` nothing is persisted.
 
 ### BM25 Parameters
 
@@ -63,7 +69,9 @@ Curated from domain expertise, organised by category:
 ## Usage
 
 ```bash
-# Evaluate the whole corpus with the hybrid baseline (default threshold 0.15)
+# Evaluate the whole corpus with the hybrid baseline. The threshold is
+# AUTO-derived from ground truth when curated labels exist; 0.15 is only the
+# fallback when there is no usable ground truth.
 puf relevance evaluate --method hybrid
 
 # Same, without persisting anything
@@ -72,10 +80,16 @@ puf relevance evaluate --method hybrid --no-store
 # Evaluate a single paper
 puf relevance paper 42 --method hybrid
 
-# Deterministic baseline with the threshold derived from ground truth (max-F1)
+# Deterministic baseline: threshold is AUTO-derived from ground truth when it
+# exists; --derive-threshold forces re-derivation, --threshold overrides it.
 puf relevance baseline --method hybrid --derive-threshold [--criterion youden]
+puf relevance baseline --method hybrid --threshold 0.2   # explicit override
+
+# Print the ground-truth-derived threshold for every baseline method
+puf relevance derive-threshold --method all [--criterion youden]
 
 # SBERT baseline (first-class, all-MiniLM-L6-v2) -> 3-class decisions
+# (threshold also auto-derived from ground truth when present)
 puf relevance sbert
 ```
 
@@ -100,10 +114,13 @@ a binary gate.
 ## Tuning
 
 To adjust relevance sensitivity:
-- Prefer deriving the threshold from ground truth
-  (`puf relevance baseline --derive-threshold`, `derive_threshold(...)`) over
-  hand-tuning `--threshold`; the `0.15` default is only the fallback for corpora
-  without consensus labels.
+- Prefer deriving the threshold from ground truth (`derive_threshold(...)`, run via
+  `puf relevance derive-threshold`) over hand-tuning `--threshold`; the `0.15`
+  default (or `0.3` for SBERT) is only the fallback for corpora without consensus
+  labels, and `evaluate`/`baseline`/`sbert` already auto-derive it. An explicit
+  `--threshold` still overrides the derived value.
+- The 9 LLM methods (`config/eval_models.json`) are **threshold-free**: they return
+  `in-scope`/`out-of-scope`/`hybrid` directly from the prompt, so no cut-off applies.
 - Adjust `--keyword-weight` and `--bm25-weight` to change method preference.
 
 ## Extending Keywords

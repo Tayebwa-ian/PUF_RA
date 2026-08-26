@@ -74,7 +74,7 @@ Empirical relevance engine. Hybrid keyword + BM25 scoring with configurable weig
 LLM screening module. Queries OpenAI-compatible API, verifies excerpts, stores decisions in `decisions` table.
 
 ### `src/snowball.py`
-Backward snowball search. Seeds from explicit paper ids, from `paper_queries` (query ids) or from the whole corpus. Fetches references via Semantic Scholar API (primary) or Crossref, normalises them, deduplicates by DOI + normalised title, accumulates `paper_sources` provenance (`snowball` added to existing query links, never re-inserting a paper) and records `snowball_edges`.
+Backward + forward snowball expansion. Seeds from explicit paper ids, from `paper_queries` (query ids) or from the whole corpus. References are resolved by a chosen standalone source — `semantic_scholar` (alias `s2`) is a first-class resolve source with **no** OpenAlex fallback, while `crossref` and `openalex` are alternates of each other (a miss on one retries the other; `--no-alternate` disables that retry). All API traffic is paced by a shared `RateLimiter` (`--delay`, default `1.0s`); references are normalised, deduplicated by DOI + normalised title, accumulated into `paper_sources` provenance (`snowball` added to existing query links, never re-inserting a paper), and linked via `snowball_edges`.
 
 ### `src/eval_store.py`
 Evaluation storage & analysis. Ingests eval JSONL and ground-truth CSV; computes inter-rater agreement (Cohen's / Fleiss' κ) and consensus; computes per-method metrics (precision/recall/F1, κ, ROC-AUC) vs the gold standard.

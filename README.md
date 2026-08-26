@@ -27,8 +27,8 @@ pip install -r requirements.txt
 puf import bibtex cititations_data/query1/*.bib --query-ids 1 --source ACM
 puf import bibtex cititations_data/query2/*.bib --query-ids 2 --source IEEE
 
-# Evaluate relevance
-puf relevance evaluate --threshold 0.15
+# Evaluate relevance (threshold auto-derived from ground truth; 0.15 only the fallback when none)
+puf relevance evaluate
 
 # Run LLM screening (requires API key)
 puf screen --model qwen3-next-80b-a3b-instruct \
@@ -56,7 +56,7 @@ puf tui
 ```
 puf import bibtex <files...> --query-ids <ids> --source <name>
 puf import csv <file> --format <acm|ieee> --query-ids <ids> --source <name>
-puf relevance evaluate [--method <keyword|bm25|hybrid>] [--threshold 0.15]
+puf relevance evaluate [--method <keyword|bm25|hybrid>] [--derive-threshold] [--threshold 0.15]
 puf relevance paper <id>
 puf relevance stats
 puf screen --model <name> --api-key <key> --base-url <url> --query-ids <ids>

@@ -221,3 +221,94 @@ def test_archive_dedupes_repeated_ids(tmp_path):
          "--state", str(state), "--apply"]
     ) == 0
     assert archive.read_text(encoding="utf-8").count("- [X]") == 1
+
+
+def test_merge_archive_keeps_colliding_ids():
+    # Regression: an incoming [ID] that already exists in the archive must NOT
+    # be silently dropped. When the body differs, both records survive with
+    # distinct keys (the incoming one disambiguated via a stable `#N` suffix).
+    from scripts.condense import merge_archive
+
+    existing = (
+        "# Board Archive\n\n"
+        "Resolved entries archived from the agent message board.\n\n"
+        "- [MSG-001] research taxonomy finding — DONE — old body text\n"
+    )
+    new = (
+        "# Board Archive\n\n"
+        "Resolved entries archived from the agent message board.\n\n"
+        "- [MSG-001] live-run finding — DONE — different body text\n"
+    )
+    merged = merge_archive(existing, new)
+
+    # The previously archived entry is left untouched and retained.
+    assert "- [MSG-001]" in merged
+    assert "old body text" in merged
+    # The colliding incoming entry is preserved (disambiguated), not dropped.
+    assert "- [MSG-001#2]" in merged
+    assert "different body text" in merged
+    assert merged.count("old body text") == 1
+    assert merged.count("different body text") == 1
+
+
+def test_merge_archive_dedupes_identical_rearchived_lines():
+    # A genuinely identical re-archive (same text) is still deduped, not counted
+    # twice, and not given a suffix.
+    from scripts.condense import merge_archive
+
+    existing = (
+        "# Board Archive\n\n"
+        "- [X] same body — DONE — summary\n"
+    )
+    new = (
+        "# Board Archive\n\n"
+        "- [X] same body — DONE — summary\n"
+    )
+    merged = merge_archive(existing, new)
+    assert merged.count("- [X]") == 1
+    assert "- [X#2]" not in merged
+
+
+def test_condense_archive_no_silent_drop_on_id_collision(tmp_path):
+    # End-to-end regression mirroring the reported incident: two separate runs
+    # each archive a distinct [MSG-001] (different bodies). Both must survive.
+    import sys
+    from pathlib import Path as _P
+
+    if str(_P(__file__).resolve().parent.parent) not in sys.path:
+        sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+    from scripts.condense import condense_command
+
+    board = tmp_path / "BOARD.md"
+    archive = tmp_path / "ARCH.md"
+    state = tmp_path / "STATE.md"
+
+    def _board_with_body(entry_id: str, body: str) -> str:
+        return (
+            "# Board\n\n"
+            "## [%s] Resolved thing\n"
+            "- Type: INFO\n"
+            "- Status: DONE\n"
+            "- Created: 2026-08-26\n"
+            "- Body: |\n"
+            "  %s\n\n"
+            "<!-- New entries go above this line. -->\n" % (entry_id, body)
+        )
+
+    board.write_text(_board_with_body("MSG-001", "taxonomy finding from research"), encoding="utf-8")
+    assert condense_command(
+        ["--board", str(board), "--archive", str(archive),
+         "--state", str(state), "--apply"]
+    ) == 0
+
+    board.write_text(_board_with_body("MSG-001", "live-run finding from orchestrator"), encoding="utf-8")
+    assert condense_command(
+        ["--board", str(board), "--archive", str(archive),
+         "--state", str(state), "--apply"]
+    ) == 0
+
+    archived = archive.read_text(encoding="utf-8")
+    assert "taxonomy finding from research" in archived
+    assert "live-run finding from orchestrator" in archived
+    assert "- [MSG-001]" in archived
+    assert "- [MSG-001#2]" in archived

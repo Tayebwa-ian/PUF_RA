@@ -34,12 +34,7 @@ measurement *with* ML/modeling (e.g. power/EM traces fed to an ML model) is
 labelled `hybrid`; a pure ML/modeling CRP attack stays `out-of-scope`, and a
 pure physical attack is `in-scope`.
 
-- Deterministic baseline: `keyword`, `bm25`, `hybrid` (`src/relevance.py`) —
-  threshold derivable from ground truth with
-  `src.relevance.derive_threshold(conn, method, criterion="f1"|"youden")`
-  (`puf relevance baseline --derive-threshold`; max-F1 by default, Youden's J
-  optional), falling back to the configurable `0.15` default when no consensus
-  labels exist; writes 3-class decisions into `evals` via `eval_store`.
+- Deterministic baseline: `keyword`, `bm25`, `hybrid` (`src/relevance.py`). **Thresholds are auto-generated and applied** once `ground_truth_consensus` is populated: `evaluate_corpus`, `puf relevance baseline` and `puf relevance sbert` derive the per-method cut-off (max-F1 / Youden) via `src.relevance.derive_threshold(conn, method, criterion="f1"|"youden")` automatically and use it, falling back to the configurable `0.15` default (`0.3` for SBERT) only when no consensus labels exist (inspect with `puf relevance derive-threshold --method all`). The 9 LLM configurations are **threshold-free** — they return the 3-class decision directly from the prompt. Baseline decisions are written into `evals` via `eval_store`.
 - **SBERT embedding baseline — first-class, non-optional.** Its dependencies
   are installed; `puf relevance sbert` runs it, emits 3-class decisions, and
   ingests them into `eval_runs` / `evals` (method `sbert`, `eval_runs.model` =
@@ -114,8 +109,11 @@ For each `eval_runs` row vs the consensus gold standard (`src/eval_store.compute
 - **ROC-AUC** (binary, `in-scope` positive) where a continuous `score` exists,
   reported as the scalar `auc_in_scope` (no per-threshold curve is stored, so the
   per-run plot is the 3×3 confusion matrix — `analysis.plot_confusion`).
-- **Threshold derivation** for the deterministic baseline: max-F1 / Youden sweep
-  vs `ground_truth_consensus` (`src.relevance.derive_threshold`).
+- **Threshold derivation** for the deterministic baselines: max-F1 / Youden sweep
+  vs `ground_truth_consensus` (`src.relevance.derive_threshold`), now applied
+  **automatically** by `evaluate` / `baseline` / `sbert` once curated labels exist;
+  the LLM methods skip it (threshold-free). Reproducibility (`temperature=0`, ≥3
+  runs) is unchanged.
 - Paired comparisons: **McNemar's test**, **bootstrap CIs**, **Holm–Bonferroni**
   across the 10+ methods.
 - **LLM-as-judge** (optional): pin an *out-of-family* judge model, swap candidate

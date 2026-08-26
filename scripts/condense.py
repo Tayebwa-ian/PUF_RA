@@ -52,25 +52,62 @@ def _archive_header(text: str) -> list[str]:
     return header
 
 
+def _unique_eid(eid: str, seen: set[str]) -> str:
+    """Return ``eid`` unless it collides with ``seen``; then ``eid#2``, ``eid#3``…"""
+    if eid not in seen:
+        return eid
+    counter = 2
+    while "%s#%d" % (eid, counter) in seen:
+        counter += 1
+    return "%s#%d" % (eid, counter)
+
+
+def _replace_bullet_eid(line: str, eid: str) -> str:
+    """Rewrite the ``[ID]`` token at the start of an archive bullet line."""
+    return _ARCHIVE_BULLET_RE.sub("- [%s] " % eid, line, count=1)
+
+
 def merge_archive(existing: str, new: str) -> str:
     """Merge a prior archive (``existing``) with the freshly built one (``new``).
 
-    Old entries are kept first; new entries are appended only when their ``[ID]``
-    has not already been archived, so repeated ``--apply`` runs never create
-    duplicate archive lines and never discard previously archived summaries.
+    Existing entries are preserved verbatim and listed first. New entries are
+    appended, with two guarantees:
+
+    * An incoming ``[ID]`` that is identical (same text) to an already-archived
+      line is treated as a re-archived duplicate and skipped — so repeated
+      ``--apply`` runs never create duplicate archive lines.
+    * An incoming ``[ID]`` that is *distinct* (different body) yet collides with
+      an already-archived ``[ID]`` is never silently dropped. It is kept with a
+      stable disambiguating suffix (``ID#2``, ``ID#3`` …) so both records survive
+      distinctly and the previously archived entry is left untouched.
     """
     existing_bullets = _archive_bullets(existing)
     new_bullets = _archive_bullets(new)
 
-    seen: set[str] = set()
+    seen_eids: set[str] = set()
+    seen_lines: set[str] = set()
     merged: list[str] = []
-    for line in existing_bullets + new_bullets:
+
+    for line in existing_bullets:
         m = _ARCHIVE_BULLET_RE.match(line)
         eid = m.group(1) if m else None
-        if eid is not None and eid in seen:
-            continue
         if eid is not None:
-            seen.add(eid)
+            seen_eids.add(eid)
+        seen_lines.add(line)
+        merged.append(line)
+
+    for line in new_bullets:
+        m = _ARCHIVE_BULLET_RE.match(line)
+        eid = m.group(1) if m else None
+        if eid is not None:
+            if line in seen_lines:
+                continue
+            unique = _unique_eid(eid, seen_eids)
+            if unique != eid:
+                line = _replace_bullet_eid(line, unique)
+            seen_eids.add(eid)
+            seen_eids.add(unique)
+        seen_lines.add(line)
         merged.append(line)
 
     header = _archive_header(new)

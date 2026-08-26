@@ -147,7 +147,7 @@ still stops gracefully and stays resumable.
 
 ## API usage
 
-### Semantic Scholar (primary)
+### Semantic Scholar (standalone resolve source)
 
 - **Base URL:** `https://api.semanticscholar.org/graph/v1`
 - **Search paper:** `GET /paper/search?query={title}&fields=title,authors,year,abstract,externalIds,publicationVenue&limit=1`
@@ -161,7 +161,7 @@ Papers without a DOI have no title search in S2 — they are skipped gracefully
 during S2 resolution and remain `pending`/`unresolved_title_failed`. Crossref
 uses `GET /works/{DOI}`.
 
-### Crossref (fallback)
+### Crossref (alternate of OpenAlex)
 
 - **Base URL:** `https://api.crossref.org/works`
 - **Get work:** `GET /works/{DOI}`
