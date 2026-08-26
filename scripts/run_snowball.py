@@ -21,6 +21,7 @@ from typing import Optional
 
 from src.db import get_connection
 from src.snowball import run_snowball
+from src.rate_limiter import RateLimiter
 
 
 def _parse_id_list(raw: Optional[str]) -> Optional[list[int]]:
@@ -32,7 +33,11 @@ def _parse_id_list(raw: Optional[str]) -> Optional[list[int]]:
 
 
 def _legacy_to_new_source(source: str) -> str:
-    return "crossref" if source == "semantic_scholar" else source
+    # s2 / semantic_scholar are both the real Semantic Scholar source; never
+    # remap to crossref (the new resolver handles S2 directly).
+    if source == "s2":
+        return "semantic_scholar"
+    return source
 
 
 def _uses_new_path(args: argparse.Namespace) -> bool:
@@ -129,6 +134,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-unresolved", default="snowball_unresolved.csv",
         help="CSV path for non-resolved references ('' disables the export)",
     )
+    parser.add_argument(
+        "--no-alternate", action="store_true",
+        help="Single-source resolution: do not fall back to the alternate "
+             "source (resolve on Crossref or Semantic Scholar alone).",
+    )
     return parser
 
 
@@ -139,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     seed_query_ids = _parse_id_list(args.seed_query_ids)
     seed_paper_ids = _parse_id_list(args.seed_paper_ids)
+    limiter = RateLimiter(min_interval=args.delay)
 
     if _uses_new_path(args):
         from src.db_schema import ensure_schema
@@ -158,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_api_calls=max_api_calls,
                     assured=args.assured,
                     export_path=args.export_unresolved or None,
+                    rate_limiter=limiter, no_alternate=args.no_alternate,
                 )
                 print(f"Resolve stats: {stats}")
                 return 0
@@ -182,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
                     resolve=not args.harvest_only,
                     assured=args.assured,
                     export_path=args.export_unresolved or None,
+                    rate_limiter=limiter, no_alternate=args.no_alternate,
                 )
                 print(f"Harvest ({direction}) stats: {stats}")
                 if args.with_pdf:

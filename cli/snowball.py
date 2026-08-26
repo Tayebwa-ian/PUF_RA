@@ -8,8 +8,9 @@ from typing import Optional
 
 from src.db import get_connection
 from src.snowball import run_snowball
+from src.rate_limiter import RateLimiter
 
-_COMMANDS = ("run", "stats")
+_COMMANDS = ("run", "stats", "backfill-abstracts")
 
 
 def _parse_id_list(raw: Optional[str]) -> Optional[list[int]]:
@@ -94,6 +95,11 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         "--export-unresolved", default="snowball_unresolved.csv",
         help="CSV path for non-resolved references ('' disables the export)",
     )
+    parser.add_argument(
+        "--no-alternate", action="store_true",
+        help="Single-source resolution: do not fall back to the alternate "
+             "source (resolve on Crossref or Semantic Scholar alone).",
+    )
 
 
 def _uses_new_path(args: argparse.Namespace) -> bool:
@@ -103,7 +109,7 @@ def _uses_new_path(args: argparse.Namespace) -> bool:
         or args.direction != "backward"
         or args.with_pdf
         or args.mailto
-        or args.source in ("openalex", "s2")
+        or args.source in ("openalex", "s2", "semantic_scholar")
     )
 
 
@@ -129,12 +135,14 @@ def _run_new_path(conn, args) -> int:
         args.max_api_calls if args.max_api_calls and args.max_api_calls > 0 else None
     )
 
+    limiter = RateLimiter(min_interval=args.delay)
     if args.resolve_only:
         stats = resolve_reference_lists(
             conn, source=_legacy_to_new_source(args.source),
             mailto=args.mailto, max_api_calls=max_api_calls,
             assured=args.assured,
             export_path=args.export_unresolved or None,
+            rate_limiter=limiter, no_alternate=args.no_alternate,
         )
         print(f"Resolve stats: {stats}")
         return 0
@@ -159,6 +167,7 @@ def _run_new_path(conn, args) -> int:
             resolve=not args.harvest_only,
             assured=args.assured,
             export_path=args.export_unresolved or None,
+            rate_limiter=limiter, no_alternate=args.no_alternate,
         )
         print(f"Harvest ({direction}) stats: {stats}")
         if args.with_pdf:
@@ -170,7 +179,11 @@ def _run_new_path(conn, args) -> int:
 
 
 def _legacy_to_new_source(source: str) -> str:
-    return "crossref" if source == "semantic_scholar" else source
+    # s2 / semantic_scholar are both the real Semantic Scholar source; never
+    # remap to crossref (the new resolver handles S2 directly).
+    if source == "s2":
+        return "semantic_scholar"
+    return source
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,6 +197,35 @@ def main(argv: list[str] | None = None) -> int:
 
     stats_parser = subparsers.add_parser("stats", help="Show snowball statistics")
     stats_parser.add_argument("--db", default="results.db", help="SQLite database path")
+
+    backfill_parser = subparsers.add_parser(
+        "backfill-abstracts",
+        help="Backfill missing abstracts for harvested papers (Crossref/OpenAlex/Semantic Scholar)",
+    )
+    backfill_parser.add_argument("--db", default="results.db", help="SQLite database path")
+    backfill_parser.add_argument(
+        "--source", choices=["crossref", "openalex", "semantic_scholar", "s2"],
+        default="crossref",
+        help="Primary source (Crossref/OpenAlex/Semantic Scholar). With default "
+             "behaviour Crossref/OpenAlex retry each other on a miss, but "
+             "Semantic Scholar resolves standalone (no OpenAlex fallback); "
+             "--no-alternate disables all retries so the chosen source is used "
+             "alone",
+    )
+    backfill_parser.add_argument(
+        "--max-api-calls", type=int, default=None,
+        help="Stop after this many API requests (None = unlimited)",
+    )
+    backfill_parser.add_argument("--mailto", default=None, help="Polite-pool contact email")
+    backfill_parser.add_argument(
+        "--delay", type=float, default=1.0,
+        help="Minimum seconds between API calls (rate limiter pacing)",
+    )
+    backfill_parser.add_argument(
+        "--no-alternate", action="store_true",
+        help="Single-source backfill: do not fall back to OpenAlex "
+             "(Semantic Scholar is standalone; Crossref alone when set).",
+    )
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help"):
@@ -206,6 +248,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Total snowball edges: {total_edges}")
         print(f"  Max depth: {max_depth}")
         print(f"  Papers discovered: {child_count}")
+        return 0
+
+    if args.command == "backfill-abstracts":
+        from src.db_schema import ensure_schema
+        from src.rate_limiter import RateLimiter
+        from src.reference_store import backfill_abstracts
+
+        with get_connection(args.db) as conn:
+            ensure_schema(conn)
+            limiter = RateLimiter(min_interval=args.delay)
+            n = backfill_abstracts(
+                conn,
+                source=args.source,
+                mailto=args.mailto,
+                max_api_calls=args.max_api_calls,
+                limiter=limiter,
+                no_alternate=args.no_alternate,
+            )
+        print(f"Backfilled abstracts for {n} paper(s).")
         return 0
 
     if _uses_new_path(args):

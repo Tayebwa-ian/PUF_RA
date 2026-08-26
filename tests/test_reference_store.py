@@ -13,14 +13,20 @@ import pytest
 
 import src.snowball as snowball
 from src.db_schema import create_schema
-from src.rate_limiter import RateLimiter
+from src.rate_limiter import RateLimiter, RateLimitError
 from src import reference_store, zotero_sync
 from src.reference_store import (
     harvest_references,
     resolve_reference_lists,
     get_reference_inventory,
     local_find_paper,
+    backfill_abstracts,
+    _normalise_crossref_item,
+    _normalise_openalex_work,
+    _normalise_s2_reference,
+    _find_or_create_ref_paper,
 )
+from src.snowball import _ensure_source_snowball
 
 
 def _memory_db():
@@ -676,3 +682,432 @@ def test_local_resolution_sets_status_resolved_without_resolve_phase(monkeypatch
     assert conn.execute(
         "SELECT COUNT(*) FROM reference_lists WHERE status = 'resolved'"
     ).fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: abstract capture for snowball-resolved papers
+# ---------------------------------------------------------------------------
+
+def test_normalisers_capture_abstract():
+    crossref = _normalise_crossref_item(
+        {"DOI": "10.1/x", "title": ["X"], "abstract": "<jats:p>Hello <i>world</i></jats:p>"}
+    )
+    assert crossref["abstract"] == "Hello world"
+
+    openalex = _normalise_openalex_work(
+        {"title": "T", "abstract_inverted_index": {"physical": [0], "attack": [1]}}
+    )
+    assert openalex["abstract"] == "physical attack"
+
+    s2 = _normalise_s2_reference({"title": "T", "abstract": "Plain abstract text"})
+    assert s2["abstract"] == "Plain abstract text"
+
+
+def test_find_or_create_ref_paper_stores_abstract():
+    conn = _memory_db()
+    source_id = _ensure_source_snowball(conn)
+    ref = {
+        "doi": "10.5/r",
+        "title": "Ref R",
+        "authors": "A B",
+        "year": 2021,
+        "abstract": "Captured abstract text",
+        "publication_title": "V",
+    }
+    pid, is_new = _find_or_create_ref_paper(conn, ref, source_id, None)
+    assert is_new is True
+    stored = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid,)).fetchone()[0]
+    assert stored == "Captured abstract text"
+
+
+def test_find_or_create_ref_paper_backfills_existing_abstract():
+    """Local-found shortcut must NOT drop the freshly resolved abstract."""
+    conn = _memory_db()
+    source_id = _ensure_source_snowball(conn)
+    # paper already in the corpus (e.g. imported from query1) with NO abstract
+    existing = _insert_paper(conn, "Known Paper", doi="10.5/known", authors="")
+    ref = {
+        "doi": "10.5/known",
+        "title": "Known Paper",
+        "authors": "C. Resolver",
+        "year": 2019,
+        "abstract": "Resolved abstract text",
+        "publication_title": "V",
+    }
+    pid, is_new = _find_or_create_ref_paper(conn, ref, source_id, None)
+    assert pid == existing and is_new is False
+    row = conn.execute(
+        "SELECT abstract, authors FROM papers WHERE id=?", (existing,)
+    ).fetchone()
+    assert row["abstract"] == "Resolved abstract text"
+    assert row["authors"] == "C. Resolver"  # other empty fields filled too
+
+    # a stored abstract is never overwritten by a later resolution
+    ref2 = dict(ref, abstract="Different abstract")
+    pid2, is_new2 = _find_or_create_ref_paper(conn, ref2, source_id, None)
+    assert pid2 == existing and is_new2 is False
+    assert conn.execute(
+        "SELECT abstract FROM papers WHERE id=?", (existing,)
+    ).fetchone()[0] == "Resolved abstract text"
+
+
+def test_backfill_abstracts_crossref(monkeypatch):
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper Z", doi="10.9/z")  # abstract defaults to ""
+
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+        return {
+            "message": {
+                "DOI": "10.9/z",
+                "title": ["Paper Z"],
+                "abstract": "<p>Real <b>abstract</b>.</p>",
+            }
+        }
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+
+    assert backfill_abstracts(conn, source="crossref") == 1
+    stored = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid,)).fetchone()[0]
+    assert stored == "Real abstract."
+
+    # idempotent: a second run finds no empty abstracts
+    assert backfill_abstracts(conn, source="crossref") == 0
+
+
+def test_backfill_abstracts_openalex_source(monkeypatch):
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper Q", doi="10.8/q")
+
+    def fake_openalex_filter(filter_value, mailto, limiter):
+        return [{"abstract_inverted_index": {"neural": [0], "puf": [1]}}], 1
+
+    monkeypatch.setattr(reference_store, "_openalex_filter", fake_openalex_filter)
+
+    assert backfill_abstracts(conn, source="openalex") == 1
+    stored = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid,)).fetchone()[0]
+    assert stored == "neural puf"
+
+
+def test_backfill_abstracts_semantic_scholar(monkeypatch):
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper S", doi="10.7/s")
+
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+        assert "DOI:10.7/s" in url  # routed to the S2 paper endpoint
+        return {
+            "title": "Paper S",
+            "abstract": "Semantic Scholar abstract text.",
+            "externalIds": {"DOI": "10.7/S"},
+        }
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+
+    assert backfill_abstracts(conn, source="semantic_scholar") == 1
+    stored = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid,)).fetchone()[0]
+    assert stored == "Semantic Scholar abstract text."
+
+    # alias 's2' is accepted and behaves identically
+    monkeypatch.setattr(
+        reference_store,
+        "_get_json",
+        lambda *a, **k: {"title": "T", "abstract": "second", "externalIds": {}},
+    )
+    monkeypatch.setattr(
+        reference_store, "_openalex_resolve_dois", lambda *a, **k: ([], 0)
+    )
+    conn.execute(
+        "INSERT INTO papers (title, authors, year, abstract, publication_title, doi) "
+        "VALUES ('Paper S2', 'X', 2020, '', 'V', '10.7/s2')"
+    )
+    assert backfill_abstracts(conn, source="s2") == 1
+
+
+def test_backfill_abstracts_s2_no_openalex_fallback(monkeypatch):
+    conn = _memory_db()
+    _insert_paper(conn, "Paper M", doi="10.6/m")
+
+    # S2 returns no abstract; OpenAlex must NOT be contacted (S2 is standalone).
+    monkeypatch.setattr(
+        reference_store, "_get_json",
+        lambda *a, **k: {"title": "T", "abstract": None, "externalIds": {}},
+    )
+    openalex_calls = {"n": 0}
+
+    def boom(*a, **k):
+        openalex_calls["n"] += 1
+        raise AssertionError("S2 backfill must NOT fall back to OpenAlex")
+
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_openalex_filter", boom)
+
+    assert backfill_abstracts(conn, source="semantic_scholar") == 0
+    assert openalex_calls["n"] == 0
+
+    # --no-alternate on crossref also suppresses the OpenAlex retry.
+    conn2 = _memory_db()
+    _insert_paper(conn2, "Paper C", doi="10.7/c")
+    monkeypatch.setattr(
+        reference_store, "_get_json",
+        lambda *a, **k: {"message": {"DOI": "10.7/c", "title": ["C"]}},  # no abstract
+    )
+    assert backfill_abstracts(conn2, source="crossref", no_alternate=True) == 0
+    assert openalex_calls["n"] == 0
+
+
+def test_backfill_abstracts_respects_api_budget(monkeypatch):
+    conn = _memory_db()
+    _insert_paper(conn, "Paper Z", doi="10.9/z")
+
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+        return {"message": {"DOI": "10.9/z", "title": ["Z"], "abstract": "<p>x</p>"}}
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+
+    # budget 0 -> no calls, nothing updated
+    assert backfill_abstracts(conn, source="crossref", max_api_calls=0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Path B: Semantic Scholar as a first-class RESOLVE source
+# ---------------------------------------------------------------------------
+
+def test_s2_resolve_standalone(monkeypatch):
+    """A DOI reference resolves through S2 alone; OpenAlex is never contacted."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, "
+        "ref_title, ref_year, source, status) VALUES (?, 'backward', '10.2/X', "
+        "'Paper X', 2019, 'semantic_scholar', 'pending')",
+        (seed,),
+    )
+
+    def fake_s2(doi, mailto, limiter):
+        return {
+            "doi": "10.2/x", "title": "Paper X", "authors": "Y. Z",
+            "year": 2019, "abstract": "S2 abstract text.",
+            "publication_title": "V", "unstructured": "", "pdf_url": None,
+        }
+
+    monkeypatch.setattr(reference_store, "_s2_get_work", fake_s2)
+
+    def boom(*a, **k):
+        raise AssertionError("OpenAlex must NOT be contacted for S2 resolve")
+
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+
+    stats = resolve_reference_lists(conn, source="semantic_scholar", assured=False)
+
+    row = conn.execute(
+        "SELECT resolved_paper_id, status FROM reference_lists"
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["resolved_paper_id"] is not None
+    paper = conn.execute(
+        "SELECT title, authors, year, abstract FROM papers WHERE doi='10.2/x'"
+    ).fetchone()
+    assert paper["title"] == "Paper X"
+    assert paper["authors"] == "Y. Z"
+    assert paper["year"] == 2019
+    assert paper["abstract"] == "S2 abstract text."
+    assert stats["new_papers"] == 1
+
+
+def test_no_alternate_no_openalex_fallback(monkeypatch):
+    """--no-alternate: a Crossref miss is NOT retried on OpenAlex."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, "
+        "ref_title, ref_year, source, status) VALUES (?, 'backward', '10.6/D', "
+        "'Paper D', 2020, 'crossref', 'pending')",
+        (seed,),
+    )
+
+    def fake(req, *a, **k):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "works/10.6/d" in url:  # primary crossref -> 404
+            raise HTTPError(url, 404, "not found", {}, None)
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(snowball, "urlopen", fake)
+
+    def boom(*a, **k):
+        raise AssertionError("OpenAlex must NOT be contacted when --no-alternate")
+
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+
+    stats = resolve_reference_lists(
+        conn, source="crossref", no_alternate=True, assured=False
+    )
+
+    row = conn.execute(
+        "SELECT resolved_paper_id, status FROM reference_lists"
+    ).fetchone()
+    assert row["status"] == "fetch_error"
+    assert row["resolved_paper_id"] is None
+
+
+class _RecordingLimiter:
+    """A stand-in limiter that records wait_before_call invocations."""
+
+    def __init__(self):
+        self.calls = 0
+        self.max_retries = 5
+
+    def wait_before_call(self):
+        self.calls += 1
+
+    def backoff_seconds(self, attempt, retry_after_header=None):
+        return 0.0
+
+    def note_success(self):
+        pass
+
+    def note_failure(self):
+        pass
+
+
+def test_passed_limiter_is_used_not_default(monkeypatch):
+    """The supplied limiter is used; no default limiter is constructed."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, "
+        "ref_title, ref_year, source, status) VALUES (?, 'backward', '10.2/X', "
+        "'Paper X', 2019, 'crossref', 'pending')",
+        (seed,),
+    )
+
+    constructed = []
+    orig_rl = reference_store.RateLimiter
+
+    def spy(*a, **k):
+        constructed.append((a, k))
+        return orig_rl(*a, **k)
+
+    monkeypatch.setattr(reference_store, "RateLimiter", spy)
+
+    limiter = _RecordingLimiter()
+
+    def fake(req, *a, **k):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "works/10.2/x" in url:
+            return _FakeResponse({
+                "message": {
+                    "DOI": "10.2/X", "title": ["Paper X"],
+                    "author": [{"family": "Y", "given": "Z"}],
+                    "published": {"date-parts": [[2019]]},
+                }
+            })
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(snowball, "urlopen", fake)
+
+    resolve_reference_lists(conn, source="crossref", rate_limiter=limiter)
+
+    assert constructed == []  # no default limiter when one is supplied
+    assert limiter.calls >= 1  # the supplied limiter was actually paced
+
+
+def test_cli_run_passes_delay_to_resolve_limiter(monkeypatch):
+    """CLI builds RateLimiter(min_interval=delay) and passes it to resolve."""
+    import src.db as db_mod
+    from cli import snowball as cli_snowball
+
+    captured = {}
+    monkeypatch.setattr(db_mod, "get_connection", lambda *a, **k: _memory_db())
+    monkeypatch.setattr(reference_store, "harvest_references", lambda *a, **k: {})
+
+    def fake_resolve(conn, **kwargs):
+        captured["rate_limiter"] = kwargs.get("rate_limiter")
+        captured["no_alternate"] = kwargs.get("no_alternate")
+        captured["source"] = kwargs.get("source")
+        return {}
+
+    monkeypatch.setattr(reference_store, "resolve_reference_lists", fake_resolve)
+
+    cli_snowball.main(
+        ["run", "--resolve-only", "--source", "semantic_scholar",
+         "--delay", "2.5", "--no-alternate"]
+    )
+
+    assert captured["rate_limiter"] is not None
+    assert abs(captured["rate_limiter"].min_interval - 2.5) < 1e-9
+    assert captured["no_alternate"] is True
+    assert captured["source"] == "semantic_scholar"
+
+
+def test_backfill_resilient_to_rate_limit(monkeypatch):
+    """A throttled S2 fetch for one paper does not abort the batch; commits per paper."""
+    conn = _memory_db()
+    _insert_paper(conn, "Paper1", doi="10.1/a")
+    _insert_paper(conn, "Paper2", doi="10.2/b")
+
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+        if "10.1/a" in url:
+            raise RateLimitError("throttled")
+        return {"title": "T", "abstract": "got it", "externalIds": {"DOI": "10.2/b"}}
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+
+    updated = backfill_abstracts(conn, source="semantic_scholar")
+
+    # p1 throttled -> skipped; p2 processed; batch not aborted.
+    assert updated == 1
+    stored = conn.execute(
+        "SELECT abstract FROM papers WHERE doi='10.2/b'"
+    ).fetchone()[0]
+    assert stored == "got it"
+
+
+def test_cli_run_passes_delay_and_no_alternate_to_harvest(monkeypatch):
+    """`run --source semantic_scholar` (no --resolve-only) threads --delay and
+    --no-alternate into harvest_references on the new two-phase path."""
+    import src.db as db_mod
+    from cli import snowball as cli_snowball
+
+    captured = {}
+    monkeypatch.setattr(db_mod, "get_connection", lambda *a, **k: _memory_db())
+
+    def fake_harvest(*args, **kwargs):
+        captured["rate_limiter"] = kwargs.get("rate_limiter")
+        captured["no_alternate"] = kwargs.get("no_alternate")
+        captured["source"] = kwargs.get("source")
+        return {}
+
+    monkeypatch.setattr(reference_store, "harvest_references", fake_harvest)
+    # resolve_reference_lists must not be reached; short-circuit regardless.
+    monkeypatch.setattr(reference_store, "resolve_reference_lists", lambda *a, **k: {})
+
+    cli_snowball.main(
+        ["run", "--source", "semantic_scholar", "--delay", "2.5", "--no-alternate"]
+    )
+
+    assert captured["rate_limiter"] is not None
+    assert abs(captured["rate_limiter"].min_interval - 2.5) < 1e-9
+    assert captured["no_alternate"] is True
+    assert captured["source"] == "semantic_scholar"
+
+
+def test_cli_run_maps_s2_source_to_semantic_scholar(monkeypatch):
+    """The CLI `_legacy_to_new_source` s2->semantic_scholar mapping reaches the
+    resolve call."""
+    import src.db as db_mod
+    from cli import snowball as cli_snowball
+
+    captured = {}
+    monkeypatch.setattr(db_mod, "get_connection", lambda *a, **k: _memory_db())
+
+    def fake_resolve(conn, **kwargs):
+        captured["source"] = kwargs.get("source")
+        return {}
+
+    monkeypatch.setattr(reference_store, "resolve_reference_lists", fake_resolve)
+    monkeypatch.setattr(reference_store, "harvest_references", lambda *a, **k: {})
+
+    cli_snowball.main(
+        ["run", "--source", "s2", "--resolve-only", "--delay", "1.0"]
+    )
+
+    assert captured["source"] == "semantic_scholar"

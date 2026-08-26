@@ -35,7 +35,10 @@ Implemented in `src/reference_store.py`. The redesign deliberately separates
 2. **Phase 2 — resolve (bulk).** `resolve_reference_lists(conn, source, ...)`
    (or the `resolve=True` tail of `harvest_references`) walks **every** unresolved
    `reference_lists` row that carries a DOI and bulk-resolves it. This implements
-   "store the list, then resolve later / bulk-download".
+   "store the list, then resolve later / bulk-download". The chosen *source* may
+   be `crossref`, `openalex`, or `semantic_scholar` — a real, standalone resolve
+   source (alias `s2`) that resolves via Semantic Scholar with **no** OpenAlex
+   fallback.
 
 Because resolution is idempotent (guarded by `resolved_paper_id IS NULL`), a
 `--resolve-only` run can be repeated indefinitely; each pass picks up where the
@@ -50,6 +53,45 @@ immediately — zero network calls — and only genuinely-unknown references are
 resolved externally. Local-first also prevents re-inserting a paper that was
 found by `query1`, `query2` **and** snowballing: such a paper stays a single row
 and merely accumulates `paper_sources` links.
+
+## Abstract capture for resolved papers
+
+Snowball-resolved references now store the paper **abstract** (not just DOI /
+title / authors), pulled from the source work metadata during resolution:
+
+* **Crossref** — `message.abstract` is JATS XML; tags are stripped to plain text
+  (``_strip_jats``).
+* **OpenAlex** — `abstract_inverted_index` is reconstructed into plain text
+  (``_openalex_inverted_index_to_text``).
+* **Semantic Scholar** — `abstract` is returned as plain text.
+
+The abstract is written by `_find_or_create_ref_paper`: for a NEW paper via
+`_find_or_create_paper`, and for an already-known paper (local-found shortcut) by
+`_update_paper_if_needed` (`src/snowball.py`), which fills only the fields the
+existing row is missing and never overwrites a stored abstract. Every
+harvest/resolve call therefore leaves the corpus with the abstract needed for
+relevance screening whenever the source metadata carried one; a resolved paper
+whose metadata has no abstract at all is left to `puf snowball
+backfill-abstracts` (below).
+
+Papers harvested *before* this change (or any paper whose `abstract` is empty but
+carries a DOI) can be filled in afterwards without re-running the whole snowball:
+
+```bash
+puf snowball backfill-abstracts --db results.db --source crossref --delay 1.0
+puf snowball backfill-abstracts --db results.db --source semantic_scholar --delay 1.0
+puf snowball backfill-abstracts --db results.db --source crossref --no-alternate --delay 1.0
+```
+
+`backfill_abstracts(conn, source="crossref", mailto=None, max_api_calls=None,
+limiter=None, no_alternate=False)` SELECTs every `papers` row with a NULL/empty
+`abstract` and a non-null `DOI`, fetches the abstract by DOI and UPDATEs it. The
+source may be `crossref` (retries OpenAlex on a miss unless `--no-alternate`),
+`openalex`, or `semantic_scholar`/`s2` (standalone — no OpenAlex fallback, even
+without `--no-alternate`). It is idempotent and resumable (only empty abstracts
+are touched), honours `--max-api-calls` / `--delay`, and is resilient: each paper
+is committed individually and a throttled fetch does not abort the remaining
+batch (the run stops gracefully and returns what was done).
 
 ## Backward + Forward (TARCiS / PRISMA-S)
 
@@ -96,6 +138,13 @@ them and continues with the next seed.
   snowballing is achieved by combining `--delay` with repeated bounded runs,
   which resume automatically.
 
+**OpenAlex budget exhaustion.** OpenAlex's polite pool enforces a daily request
+budget that can be exhausted mid-run, after which its fallback becomes
+unavailable and resolution can stall. When this happens, pass
+`--no-alternate --source semantic_scholar` (or `--source crossref --no-alternate`)
+to continue resolving on a single source without depending on OpenAlex; the run
+still stops gracefully and stays resumable.
+
 ## API usage
 
 ### Semantic Scholar (primary)
@@ -107,7 +156,9 @@ them and continues with the next seed.
 - **Auth:** None required
 
 A DOI is used directly as the Semantic Scholar identifier (`DOI:10.x/y`), which
-saves one request; papers without a DOI fall back to a title search. Crossref
+saves one request; Semantic Scholar resolves DOI-bearing references standalone.
+Papers without a DOI have no title search in S2 — they are skipped gracefully
+during S2 resolution and remain `pending`/`unresolved_title_failed`. Crossref
 uses `GET /works/{DOI}`.
 
 ### Crossref (fallback)
@@ -138,6 +189,11 @@ puf snowball run --seed-paper-ids 12,44,91 --no-auto-relevance
 # Show snowball stats
 puf snowball stats
 
+# Backfill abstracts for harvested papers missing them (Crossref, OpenAlex retry)
+puf snowball backfill-abstracts --db results.db --source crossref --delay 1.0
+puf snowball backfill-abstracts --db results.db --source semantic_scholar --delay 1.0
+puf snowball backfill-abstracts --db results.db --source crossref --no-alternate --delay 1.0
+
 # Standalone runner with the same options
 python -m scripts.run_snowball --db results.db --depth 1 --max-refs 15 --max-api-calls 40
 ```
@@ -153,13 +209,27 @@ Two-phase flags:
 * `--harvest-only` stores the inventory without the Phase-2 resolve.
 * `--resolve-only` runs only Phase 2 (idempotent, resumable).
 * `--direction {backward,forward,both}` selects the citation direction.
-* `--source {crossref,openalex,s2}` selects the resolution source (Crossref and
-  OpenAlex are batch-friendly; S2 is backward-only).
+* `--source {crossref,openalex,semantic_scholar,s2}` selects the resolution
+  source. `crossref` and `openalex` are batch-friendly and retry each other;
+  `semantic_scholar` (alias `s2`) resolves via Semantic Scholar **alone** (no
+  OpenAlex fallback). Combine with `--no-alternate` (below) to force
+  single-source resolution on any source.
 * `--with-pdf` reports the count of papers with a captured `pdf_url`.
 * `--assured` (default `True`) runs the `verify_retrieval` backstop and a
   final retry of failed rows before export.
 * `--export-unresolved <path>` writes the unresolved-reference CSV (default
   `snowball_unresolved.csv`).
+* `--no-alternate` — single-source resolution: never fall back to the alternate
+  source. Ordinarily a Crossref miss retries OpenAlex (and vice-versa); with this
+  flag the primary source alone is used and an unresolvable DOI is marked
+  `fetch_error` instead of being retried cross-source. Essential when OpenAlex is
+  rate-limited or its daily budget is exhausted (see Rate limits below): combine
+  with `--source semantic_scholar` (or `crossref`) to keep resolving without
+  OpenAlex.
+* `--delay <seconds>` sets the rate-limiter pacing interval; it is honoured on
+  **both** the harvest and the resolve paths (the CLI builds a single
+  `RateLimiter(min_interval=delay)` and passes it to `harvest_references` and
+  `resolve_reference_lists`).
 
 ## Statistics
 
@@ -241,16 +311,18 @@ code-enforced on migrated ones — see [Migration safety](#migration-safety)):
 | `resolved` | linked to a `papers` row (local, by DOI, by title, or by `verify_retrieval`) |
 | `unresolved_no_doi` | no DOI **and** no usable title to recover from |
 | `unresolved_title_failed` | had a title, but no confident title match within +/-1 year |
-| `fetch_error` | had a DOI but failed on **both** Crossref and OpenAlex |
+| `fetch_error` | had a DOI but failed on the chosen source (Crossref, OpenAlex, or Semantic Scholar); with `--no-alternate` only the single chosen source is attempted |
 
 Resolution rules applied in **both** `harvest_references` and
 `resolve_reference_lists`:
 
 1. **Local-first** — if `local_find_paper` finds it, link + `status='resolved'`.
-2. **DOI'd, not local** — try the chosen source; on 404/error retry the
-   **alternate** source (Crossref <-> OpenAlex, OpenAlex via `filter=doi:`). If
-   either returns metadata -> insert + link + `resolved`. If **both** fail ->
-   `fetch_error`.
+2. **DOI'd, not local** — try the chosen source. For Crossref or OpenAlex, on a
+   404/error retry the **alternate** source (Crossref <-> OpenAlex, OpenAlex via
+   `filter=doi:`); Semantic Scholar resolves standalone (no OpenAlex fallback).
+   If the attempted source(s) return metadata -> insert + link + `resolved`. If
+   all attempted sources fail -> `fetch_error`. With `--no-alternate` only the
+   chosen source is attempted (no retry).
 3. **DOI-less with a title** — `_resolve_by_title` queries OpenAlex
    `filter=title.search:` then Crossref `query.bibliographic=`, accepting a
    candidate only when the **normalised title is exactly equal AND the year is
@@ -329,7 +401,7 @@ carry no DOI in the seed's reference metadata.
 ## See also
 
 * [`docs/database_migration.md`](database_migration.md) — additive, idempotent
-  migration framework (v1–v3).
+  migration framework (v1–v5).
 * `src/reference_store.py` — harvest / resolve / `verify_retrieval` implementation.
 * `tests/test_reference_store.py` — hermetic tests for local-first, multi-source
   retry, title fallback, status accounting, `verify_retrieval` backfill, and

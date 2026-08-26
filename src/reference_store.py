@@ -20,6 +20,7 @@ API is unavailable. Every run is logged to ``snowball_runs`` (TARCiS-style).
 from __future__ import annotations
 
 import csv
+import re
 from typing import Any, Iterable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -27,10 +28,13 @@ from urllib.parse import quote
 from src.rate_limiter import RateLimiter, RateLimitError
 from src.snowball import (
     CROSSREF_BASE,
+    S2_BASE,
+    S2_FIELDS,
     _create_snowball_edge,
     _ensure_source_snowball,
     _find_or_create_paper,
     _get_json,
+    _update_paper_if_needed,
     find_existing_paper_id,
     normalise_doi,
     normalise_title,
@@ -42,8 +46,14 @@ OPENALEX_BASE = "https://api.openalex.org/works"
 #: Default pacing interval (seconds) when no limiter is supplied
 DEFAULT_MIN_INTERVAL = 1.0
 
-#: Map a source to its alternate for cross-source retry (Crossref <-> OpenAlex)
-_ALTERNATE_SOURCE = {"crossref": "openalex", "openalex": "crossref"}
+#: Map a source to its alternate for cross-source retry (Crossref <-> OpenAlex).
+#: ``semantic_scholar`` has no alternate (it is a first-class, standalone source);
+#: a ``None`` value means "do not retry across sources".
+_ALTERNATE_SOURCE = {
+    "crossref": "openalex",
+    "openalex": "crossref",
+    "semantic_scholar": None,
+}
 
 #: Run statistics: integer counters plus the nested ``status_counts`` mapping
 #: (``dict[str, int]``) produced by :func:`_status_counts`.
@@ -234,6 +244,7 @@ def _normalise_crossref_item(item: dict[str, Any]) -> dict[str, Any]:
         "unstructured": "",
         "publication_title": _first(item.get("container-title")),
         "pdf_url": pdf_url,
+        "abstract": _strip_jats(item.get("abstract")),
     }
 
 
@@ -257,6 +268,7 @@ def _normalise_openalex_work(work: dict[str, Any]) -> dict[str, Any]:
         "unstructured": "",
         "publication_title": publication_title,
         "pdf_url": pdf_url,
+        "abstract": _openalex_inverted_index_to_text(work.get("abstract_inverted_index")),
     }
 
 
@@ -274,7 +286,156 @@ def _normalise_s2_reference(ref: dict[str, Any]) -> dict[str, Any]:
         "unstructured": "",
         "publication_title": venue_name,
         "pdf_url": None,
+        "abstract": (ref.get("abstract") or ""),
     }
+
+
+def _strip_jats(xml_text: Optional[str]) -> str:
+    """Strip JATS XML tags from a Crossref abstract into plain text.
+
+    Crossref returns abstracts as JATS XML (``<jats:p>`` etc.); we drop the
+    tags, decode the common XML entities and collapse whitespace so the stored
+    abstract is readable plain text.
+    """
+    if not xml_text:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", xml_text)
+    text = (
+        text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&apos;", "'")
+        .replace("&#x2009;", " ")
+        .replace("&#x200A;", " ")
+        .replace("&#x200B;", "")
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    # Drop the stray space that JATS tag-stripping leaves before punctuation.
+    text = re.sub(r" ([.,;:!?])", r"\1", text)
+    return text
+
+
+def _openalex_inverted_index_to_text(inv: Optional[dict]) -> str:
+    """Reconstruct plain-text from an OpenAlex ``abstract_inverted_index``.
+
+    OpenAlex stores abstracts as a word -> [positions] inverted index; we
+    re-emit the words in position order, separated by single spaces.
+    """
+    if not inv or not isinstance(inv, dict):
+        return ""
+    positions: list[tuple[int, str]] = []
+    for word, idxs in inv.items():
+        if not isinstance(idxs, list):
+            continue
+        for i in idxs:
+            try:
+                positions.append((int(i), word))
+            except (TypeError, ValueError):
+                continue
+    positions.sort(key=lambda t: t[0])
+    return " ".join(word for _, word in positions)
+
+
+def _fetch_abstract_crossref(
+    doi: str, mailto: Optional[str], limiter: RateLimiter
+) -> Optional[str]:
+    """Fetch a paper abstract by DOI from Crossref (JATS -> plain text)."""
+    nd = normalise_doi(doi)
+    if not nd:
+        return None
+    url = f"{CROSSREF_BASE}/{quote(nd, safe='/')}"
+    if mailto:
+        url += f"?mailto={quote(mailto)}"
+    try:
+        data = _get_json(url, rate_limiter=limiter)
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
+    item = data.get("message") or {}
+    if not item.get("DOI") and not item.get("title"):
+        return None
+    return _strip_jats(item.get("abstract")) or None
+
+
+def _fetch_abstract_openalex(
+    doi: str, mailto: Optional[str], limiter: RateLimiter
+) -> Optional[str]:
+    """Fetch a paper abstract by DOI from OpenAlex (inverted index -> text)."""
+    nd = normalise_doi(doi)
+    if not nd:
+        return None
+    try:
+        works, _ = _openalex_filter(f"doi:{quote(nd)}", mailto, limiter)
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
+    if not works:
+        return None
+    return _openalex_inverted_index_to_text(works[0].get("abstract_inverted_index")) or None
+
+
+def _fetch_abstract_s2(
+    doi: str, mailto: Optional[str], limiter: RateLimiter
+) -> Optional[str]:
+    """Fetch a paper abstract by DOI from Semantic Scholar (plain text).
+
+    Uses the existing S2 ``paper/DOI:`` endpoint with the shared fields and
+    honours the shared limiter. Robust: any missing/error response (including a
+    None abstract) returns ``None`` instead of raising, so a single bad DOI
+    never aborts the backfill loop.
+    """
+    nd = normalise_doi(doi)
+    if not nd:
+        return None
+    url = f"{S2_BASE}/paper/DOI:{quote(nd, safe='/')}?fields={S2_FIELDS}"
+    try:
+        data = _get_json(url, rate_limiter=limiter)
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return (data.get("abstract") or "") or None
+
+
+def _s2_get_work(
+    doi: str, mailto: Optional[str], limiter: RateLimiter
+) -> Optional[dict[str, Any]]:
+    """GET a Semantic Scholar paper by DOI and return a normalised work dict.
+
+    Reuses the shared S2 paper endpoint (``S2_BASE`` / ``S2_FIELDS``) and the
+    shared limiter. Returns ``None`` on missing/error so a single bad DOI never
+    aborts the batch resolution loop.
+    """
+    nd = normalise_doi(doi)
+    if not nd:
+        return None
+    url = f"{S2_BASE}/paper/DOI:{quote(nd, safe='/')}?fields={S2_FIELDS}"
+    try:
+        data = _get_json(url, rate_limiter=limiter)
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _normalise_s2_reference(data)
+
+
+def _s2_resolve_dois(
+    dois: list[str], mailto: Optional[str], limiter: RateLimiter
+) -> tuple[list[dict[str, Any]], int]:
+    """Resolve a list of DOIs via Semantic Scholar, one request per DOI.
+
+    S2 has no batch-DOI endpoint here, so each DOI is fetched individually; a
+    single failed/unavailable DOI is skipped so the batch continues.
+    """
+    out: list[dict[str, Any]] = []
+    used = 0
+    for doi in dois:
+        if not normalise_doi(doi):
+            continue
+        used += 1
+        work = _s2_get_work(doi, mailto, limiter)
+        if work is not None and (work.get("doi") or work.get("title")):
+            out.append(work)
+    return out, used
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +460,11 @@ def _fetch_seed_reference_list(
     """
     if budget is not None and budget <= 0:
         return [], 0
+
+    # Semantic Scholar is harvested via the S2 endpoint; resolution still uses
+    # the first-class "semantic_scholar" source (no OpenAlex fallback).
+    if source == "semantic_scholar":
+        source = "s2"
 
     if source == "crossref":
         if direction != "backward":
@@ -402,8 +568,17 @@ def _upsert_reference_list(
 def _find_or_create_ref_paper(
     conn: Any, ref: dict[str, Any], source_id: int, pdf_url: Optional[str]
 ) -> tuple[int, bool]:
+    """Return ``(paper_id, is_new)`` for *ref*, never re-inserting a known paper.
+
+    On the local-found shortcut the freshly fetched metadata is not discarded:
+    :func:`src.snowball._update_paper_if_needed` backfills any field the existing
+    row is missing (notably ``abstract``, needed for relevance screening) without
+    ever overwriting data we already have. A resolved paper whose source metadata
+    carries no abstract at all is left to ``puf snowball backfill-abstracts``.
+    """
     existing = local_find_paper(conn, ref.get("doi"), ref.get("title"))
     if existing is not None:
+        _update_paper_if_needed(conn, existing, ref)
         if pdf_url:
             conn.execute(
                 "UPDATE papers SET pdf_url = ? WHERE id = ? AND pdf_url IS NULL",
@@ -415,7 +590,7 @@ def _find_or_create_ref_paper(
         "title": (ref.get("title") or "").strip(),
         "authors": ref.get("authors") or "",
         "year": ref.get("year") or 0,
-        "abstract": "",
+        "abstract": (ref.get("abstract") or "").strip(),
         "publication_title": ref.get("publication_title") or "",
     }
     paper_id = _find_or_create_paper(conn, normed, source_id)
@@ -464,6 +639,8 @@ def _resolve_dois_via_source(
     """
     if source == "openalex":
         return _openalex_resolve_dois(list(dois), mailto, limiter)
+    if source == "semantic_scholar":
+        return _s2_resolve_dois(list(dois), mailto, limiter)
     return _crossref_resolve_dois(list(dois), mailto, limiter)
 
 
@@ -476,6 +653,7 @@ def _batch_resolve_references(
     max_api_calls: Optional[int],
     api_calls: int,
     stats: StatsDict,
+    no_alternate: bool = False,
 ) -> int:
     """Resolve a batch of unresolved references that carry a DOI.
 
@@ -501,7 +679,7 @@ def _batch_resolve_references(
         if nd not in order:
             order.append(nd)
 
-    alternate = _ALTERNATE_SOURCE[source]
+    alternate = None if no_alternate else _ALTERNATE_SOURCE.get(source)
 
     for chunk in _chunk(order, 50):
         if max_api_calls is not None and api_calls >= max_api_calls:
@@ -520,7 +698,7 @@ def _batch_resolve_references(
         missing = [d for d in primary_chunk if d not in by_doi]
         if missing and remaining is not None:
             missing = missing[:remaining]
-        if missing:
+        if missing and alternate is not None:
             alt_resolved, used2 = _resolve_dois_via_source(missing, alternate, mailto, limiter)
             api_calls += used2
             stats["api_calls"] = api_calls
@@ -630,7 +808,8 @@ def _best_title_match(
 
 
 def _resolve_by_title(
-    ref: dict[str, Any], mailto: Optional[str], limiter: RateLimiter
+    ref: dict[str, Any], mailto: Optional[str], limiter: RateLimiter,
+    primary: Optional[str] = None,
 ) -> tuple[Optional[dict[str, Any]], int]:
     """Resolve a DOI-less reference by title + year via OpenAlex then Crossref.
 
@@ -643,6 +822,13 @@ def _resolve_by_title(
         return None, 0
     year = ref.get("ref_year")
     norm_title = normalise_title(title)
+    if primary == "crossref":
+        works, used = _crossref_title_search(title, mailto, limiter)
+        return _best_title_match(works, norm_title, year), used
+    if primary == "openalex":
+        works, used = _openalex_title_search(norm_title, mailto, limiter)
+        return _best_title_match(works, norm_title, year), used
+    # default (no single-source restriction): try both, OpenAlex first
     works, used = _openalex_title_search(norm_title, mailto, limiter)
     match = _best_title_match(works, norm_title, year)
     if match:
@@ -659,6 +845,8 @@ def _resolve_doi_less_references(
     max_api_calls: Optional[int],
     api_calls: int,
     stats: StatsDict,
+    no_alternate: bool = False,
+    source: str = "crossref",
 ) -> int:
     """Resolve DOI-less references by title search (conservative).
 
@@ -671,6 +859,9 @@ def _resolve_doi_less_references(
     """
     if not rows:
         return api_calls
+    # S2 has no title search; leave DOI-less refs pending rather than crash.
+    if source == "semantic_scholar":
+        return api_calls
     source_id = _ensure_source_snowball(conn)
     for row in rows:
         if max_api_calls is not None and api_calls >= max_api_calls:
@@ -680,7 +871,8 @@ def _resolve_doi_less_references(
         if not title:
             _set_ref_status(conn, row["id"], "unresolved_no_doi")
             continue
-        meta, used = _resolve_by_title(row, mailto, limiter)
+        primary = source if no_alternate else None
+        meta, used = _resolve_by_title(row, mailto, limiter, primary=primary)
         api_calls += used
         stats["api_calls"] = api_calls
         if meta is None:
@@ -825,6 +1017,7 @@ def _retry_assured(
     max_api_calls: Optional[int],
     api_calls: int,
     stats: StatsDict,
+    no_alternate: bool = False,
 ) -> int:
     """Re-attempt the rows that still failed, across both sources / via title.
 
@@ -844,7 +1037,8 @@ def _retry_assured(
         ).fetchall()
     ]
     api_calls = _batch_resolve_references(
-        conn, fetch_rows, source, mailto, limiter, max_api_calls, api_calls, stats
+        conn, fetch_rows, source, mailto, limiter, max_api_calls, api_calls, stats,
+        no_alternate=no_alternate,
     )
 
     title_rows = [
@@ -858,7 +1052,8 @@ def _retry_assured(
         ).fetchall()
     ]
     api_calls = _resolve_doi_less_references(
-        conn, title_rows, mailto, limiter, max_api_calls, api_calls, stats
+        conn, title_rows, mailto, limiter, max_api_calls, api_calls, stats,
+        no_alternate=no_alternate, source=source,
     )
     return api_calls
 
@@ -874,17 +1069,18 @@ def _resolve_phase(
     stats: StatsDict,
     assured: bool,
     export_path: Optional[str],
+    no_alternate: bool = False,
 ) -> int:
     """Run the full resolution pass + (optional) assured backstop and reporting."""
     _sync_resolved_status(conn)
 
     api_calls = _batch_resolve_references(
         conn, _fetch_unresolved_with_doi(conn, direction), source, mailto,
-        limiter, max_api_calls, api_calls, stats,
+        limiter, max_api_calls, api_calls, stats, no_alternate=no_alternate,
     )
     api_calls = _resolve_doi_less_references(
         conn, _fetch_unresolved_doi_less(conn, direction), mailto, limiter,
-        max_api_calls, api_calls, stats,
+        max_api_calls, api_calls, stats, no_alternate=no_alternate, source=source,
     )
 
     counts = _status_counts(conn)
@@ -894,7 +1090,8 @@ def _resolve_phase(
         vr = verify_retrieval(conn)
         print(f"  verify_retrieval backfilled {vr['backfilled']} reference(s) by DOI.")
         api_calls = _retry_assured(
-            conn, source, mailto, limiter, max_api_calls, api_calls, stats
+            conn, source, mailto, limiter, max_api_calls, api_calls, stats,
+            no_alternate=no_alternate,
         )
         counts = _status_counts(conn)
         stats["status_counts"] = counts
@@ -955,6 +1152,7 @@ def harvest_references(
     resolve: bool = True,
     assured: bool = True,
     export_path: Optional[str] = None,
+    no_alternate: bool = False,
 ) -> StatsDict:
     """Phase 1: harvest + store a seed paper's full reference list, then resolve.
 
@@ -1049,6 +1247,7 @@ def harvest_references(
                 stats,
                 assured,
                 export_path,
+                no_alternate,
             )
         except RateLimitError:
             stats["aborted"] = 1
@@ -1074,6 +1273,7 @@ def resolve_reference_lists(
     max_api_calls: Optional[int] = None,
     assured: bool = True,
     export_path: Optional[str] = None,
+    no_alternate: bool = False,
 ) -> StatsDict:
     """Phase 2: resolve every still-unresolved reference.
 
@@ -1099,7 +1299,7 @@ def resolve_reference_lists(
     try:
         api_calls = _resolve_phase(
             conn, None, source, mailto, limiter, max_api_calls, 0, stats,
-            assured, export_path,
+            assured, export_path, no_alternate,
         )
     except RateLimitError:
         stats["aborted"] = 1
@@ -1114,6 +1314,100 @@ def resolve_reference_lists(
     _finish_run(conn, run_id, stats)
     conn.commit()
     return stats
+
+
+def _fetch_abstract_for_backfill(
+    doi: str, source: str, mailto: Optional[str], limiter: RateLimiter,
+    no_alternate: bool,
+) -> tuple[Optional[str], int]:
+    """Fetch one paper's abstract from *source* (honouring *no_alternate*).
+
+    Returns ``None`` on a miss. Crossref retries OpenAlex on a miss unless
+    *no_alternate* is set (or the source is Semantic Scholar, which is a
+    standalone source with no OpenAlex fallback). Raises ``RateLimitError`` if
+    the underlying limiter gives up so the caller can stop gracefully.
+    """
+    if source == "openalex":
+        return _fetch_abstract_openalex(doi, mailto, limiter), 1
+    if source == "semantic_scholar":
+        return _fetch_abstract_s2(doi, mailto, limiter), 1
+    # default / crossref: retry OpenAlex on a miss unless single-source mode
+    abstract = _fetch_abstract_crossref(doi, mailto, limiter)
+    used = 1
+    if abstract is None and not no_alternate:
+        alt, used2 = _openalex_resolve_dois([doi], mailto, limiter)
+        used += used2
+        if alt:
+            abstract = (alt[0].get("abstract") or "") or None
+    return abstract, used
+
+
+def backfill_abstracts(
+    conn: Any,
+    source: str = "crossref",
+    mailto: Optional[str] = None,
+    max_api_calls: Optional[int] = None,
+    limiter: Optional[RateLimiter] = None,
+    no_alternate: bool = False,
+) -> int:
+    """Backfill missing abstracts for already-harvested papers (idempotent).
+
+    Selects every ``papers`` row whose ``abstract`` is NULL/empty but which has a
+    DOI, then fetches the abstract from the chosen *source* honouring the shared
+    :class:`src.rate_limiter.RateLimiter` and *max_api_calls* budget. Only empty
+    abstracts are touched, so a partially completed run resumes cleanly. Returns
+    the number of papers updated.
+
+    Args:
+        conn: SQLite connection.
+        source: Primary source (``"crossref"``, ``"openalex"``,
+            ``"semantic_scholar"``/``"s2"``). Crossref retries OpenAlex on a miss
+            unless *no_alternate* is set; Semantic Scholar is standalone (no
+            OpenAlex fallback).
+        mailto: Contact email for the polite Crossref / OpenAlex pool.
+        max_api_calls: Stop after this many API requests (None = unlimited).
+        limiter: Pre-configured limiter; one is built from the default interval
+            when omitted.
+        no_alternate: When True, never fall back to the alternate source (use the
+            chosen source alone).
+
+    Returns:
+        Count of papers whose abstract was filled in.
+    """
+    limiter = limiter or RateLimiter(min_interval=DEFAULT_MIN_INTERVAL)
+    if source in ("s2", "semantic_scholar"):
+        source = "semantic_scholar"
+    rows = conn.execute(
+        "SELECT id, doi FROM papers "
+        "WHERE (abstract IS NULL OR abstract = '') AND doi IS NOT NULL"
+    ).fetchall()
+    updated = 0
+    api_calls = 0
+    for row in rows:
+        if max_api_calls is not None and api_calls >= max_api_calls:
+            break
+        doi = row["doi"]
+        try:
+            abstract, used = _fetch_abstract_for_backfill(
+                doi, source, mailto, limiter, no_alternate
+            )
+        except RateLimitError:
+            # A throttled source must not abort the whole batch: keep what was
+            # committed so far and continue with the remaining papers.
+            continue
+        except (HTTPError, URLError, OSError, ValueError):
+            continue
+        api_calls += used
+        if abstract:
+            conn.execute(
+                "UPDATE papers SET abstract = ?, updated_at = current_timestamp "
+                "WHERE id = ?",
+                (abstract, row["id"]),
+            )
+            updated += 1
+        # Commit after EACH paper so a mid-batch abort loses no completed work.
+        conn.commit()
+    return updated
 
 
 def get_reference_inventory(
