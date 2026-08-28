@@ -11,7 +11,7 @@ The pipeline supports:
 2. **Deduplication** — DOI-based unique constraint prevents duplicates
 3. **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
 4. **LLM screening & evaluation harness** — 3-class (in-scope/out-of-scope/hybrid) screening with OpenAI-compatible APIs, plus a comparison harness that scores deterministic, embedding (SBERT), and LLM-prompt methods against a human ground truth.
-5. **Snowball/backward search** — Recursive expansion via reference chain following (Semantic Scholar / Crossref)
+5. **Snowball search (backward *and* forward)** — The original collect → validate → extract flow, implemented as three separable stages: **harvest** (collect each seed's full reference list) → **resolve** (validate every stored reference, extract DOI/title/authors/year) → **backfill** (extract the abstracts). Backward works on Crossref / OpenAlex / Semantic Scholar; forward uses OpenAlex `filter=cites:` and therefore requires `--source openalex`.
 6. **TUI** — Interactive terminal UI for browsing, filtering, and managing the corpus
 
 ## Architecture
@@ -29,7 +29,7 @@ The pipeline supports:
                           ▼                             ▼                             ▼
                   ┌─────────────────┐          ┌─────────────────┐        ┌─────────────────┐
                   │  Relevance Engine│          │  LLM Screening  │        │  Snowball Search│
-                  │  (keyword+BM25)  │          │  (OpenAI API)   │        │  (S2/Crossref)  │
+                  │  (keyword+BM25)  │          │  (OpenAI API)   │        │ (S2/CR/OpenAlex)│
                   └─────────────────┘          └─────────────────┘        └─────────────────┘
                           │                             │                             │
                           └─────────────────────────────┼─────────────────────────────┘
@@ -74,7 +74,31 @@ Empirical relevance engine. Hybrid keyword + BM25 scoring with configurable weig
 LLM screening module. Queries OpenAI-compatible API, verifies excerpts, stores decisions in `decisions` table.
 
 ### `src/snowball.py`
-Backward + forward snowball expansion. Seeds from explicit paper ids, from `paper_queries` (query ids) or from the whole corpus. References are resolved by a chosen standalone source — `semantic_scholar` (alias `s2`) is a first-class resolve source with **no** OpenAlex fallback, while `crossref` and `openalex` are alternates of each other (a miss on one retries the other; `--no-alternate` disables that retry). All API traffic is paced by a shared `RateLimiter` (`--delay`, default `1.0s`); references are normalised, deduplicated by DOI + normalised title, accumulated into `paper_sources` provenance (`snowball` added to existing query links, never re-inserting a paper), and linked via `snowball_edges`.
+**Shared-helper module** for the snowball feature (`_get_json`, reference
+normalisation, `s2_get_references`, seed selection, deduplication and
+paper/source/edge persistence helpers). The single snowball implementation lives
+in `src/reference_store.py` (`harvest_references`, `resolve_reference_lists`,
+`backfill_abstracts`); `src/snowball.py` is only the low-level helper layer it
+depends on. Zotero is wired as a rate-limit-immune last-resort source in the
+resolve + backfill chains (Decision 10).
+
+### `src/reference_store.py`
+**Primary two-phase, local-first snowball path — backward *and* forward.** It realises the original *collect → validate → extract* design as three separable, resumable stages:
+
+1. `harvest_references(...)` — **collect**: fetch a seed's complete reference list and store **every** entry (direction-tagged) in `reference_lists`. Backward: Crossref `message.reference`, OpenAlex `referenced_works`, Semantic Scholar `s2_get_references`. Forward: OpenAlex `filter=cites:{openalex_id}` **only** — Crossref and S2 forward search are explicitly skipped, so forward needs `--source openalex` (`--direction forward` / `--direction both`). CLI: `--harvest-only`.
+2. `resolve_reference_lists(...)` — **validate**: resolve every unresolved `reference_lists` row (**both** directions) by DOI, with a conservative title fallback, inserting/linking `papers` + `snowball_edges` and recording an explicit `status` per row. On a **rate-limit (HTTP 429)** the next platform in `_SOURCE_RATELIMIT_CHAIN` is tried and the batch **continues** — no abort (TASK-010 / Decision 9). CLI: `--resolve-only`.
+3. `backfill_abstracts(...)` — **extract abstracts**: fill empty `papers.abstract` values by DOI, committing per paper and falling back across sources on a 429. CLI: `puf snowball backfill-abstracts`.
+
+All external HTTP is paced by a **source-aware** `RateLimiter` (Crossref / OpenAlex
+~0.05 s, Semantic Scholar ~0.6 s, Zotero instant). Resolution also runs a **batched
+OpenAlex multi-DOI pre-pass** (`_openalex_batch_by_dois`) — active for the **OpenAlex
+resolve** source and **Crossref/OpenAlex backfill** (Crossref *resolve* stays per-DOI
+polite) — plus a **batched Zotero pre-pass** that resolves DOIs from the local library
+before the slow Semantic Scholar endpoint; both are **additive** and skipped under
+`--no-batch`, which leaves the per-DOI cross-source chain as the sole path (useful when
+OpenAlex is unavailable / budget-blocked).
+
+`semantic_scholar` (alias `s2`) is a first-class resolve source that is standalone for *not-found* DOIs but falls back to OpenAlex/Crossref on a rate-limit by default; `crossref` and `openalex` are alternates of each other (a miss on one retries the other). `--no-alternate` disables all cross-source fallback, incl. on rate-limit (the affected DOIs become `fetch_error` and the batch still continues). All API traffic is paced by a shared `RateLimiter` (`--delay`, default `1.0s`). Full methodology: [`docs/snowballing.md`](snowballing.md).
 
 ### `src/eval_store.py`
 Evaluation storage & analysis. Ingests eval JSONL and ground-truth CSV; computes inter-rater agreement (Cohen's / Fleiss' κ) and consensus; computes per-method metrics (precision/recall/F1, κ, ROC-AUC) vs the gold standard.
@@ -132,7 +156,9 @@ See `database_struct.sql` for the canonical schema. Key tables:
 | `papers` | Central paper registry (DOI unique) |
 | `paper_queries` | Junction: queries ↔ papers |
 | `paper_sources` | Junction: sources ↔ papers |
-| `snowball_edges` | Backward search provenance |
+| `snowball_edges` | Snowball provenance: parent → child edges (backward *and* forward) |
+| `reference_lists` | Harvested reference inventory (direction-tagged) + assured-retrieval `status` |
+| `snowball_runs` | One row per harvest / resolve run (TARCiS-style accounting) |
 | `relevance_evals` | Empirical relevance evaluations |
 | `runs` | LLM screening runs |
 | `decisions` | Per-paper LLM decisions |
@@ -144,7 +170,7 @@ See `database_struct.sql` for the canonical schema. Key tables:
 
 ## Configuration
 
-- `config/snowball.yaml` — Snowball search parameters (depth, max refs, API choice)
+- Snowball parameters are **CLI flags**, not a config file (`--depth`, `--max-refs`, `--source`, `--direction`, `--delay`, `--max-api-calls`, `--harvest-only` / `--resolve-only`, `--no-alternate`); there is no `config/snowball.yaml`
 - `config/prompts/*.txt` — the three screening prompts (P1 zero-shot, P2 rubric, P3 few-shot)
 - `config/eval_models.json` — registry of the 3 LLMs used for the 3×3 evaluation grid (configurable, no hard-coded ids)
 - API keys are passed via CLI arguments (not stored in repo)
@@ -152,7 +178,10 @@ See `database_struct.sql` for the canonical schema. Key tables:
 ## Error Handling
 
 - Importers use try/except per-row; bad rows are skipped with warnings.
-- Snowball API calls go through `src/rate_limiter.py`: pacing, `Retry-After`, exponential backoff with jitter, and a clean stop (`aborted: 1`) after `max_retries` consecutive failures.
+- Snowball API calls go through `src/rate_limiter.py`: pacing, `Retry-After`, exponential backoff with jitter. On the **resolve / backfill** stages of the two-phase path, a `RateLimitError` after `max_retries` consecutive failures is handled by falling back to the next source in the chain and continuing the batch (it never raises/aborts those stages; only a fully throttled chain records `fetch_error`). `--no-alternate` makes even a rate-limit strict-single-source (the affected DOIs become `fetch_error` and the batch still continues).
+- The **harvest** stage's seed reference-list fetch keeps a **graceful stop with
+  `aborted: 1`**, because it has a single source and no cross-source fallback (the
+  inventory gathered so far is committed and the next run resumes).
 - Database operations use context managers with rollback on failure.
 - LLM screening retries per paper up to `max_retries` times.
 
@@ -161,7 +190,7 @@ See `database_struct.sql` for the canonical schema. Key tables:
 - SQLite WAL mode for better concurrent reads.
 - Junction tables use composite primary keys for fast lookups.
 - BM25 corpus is built in-memory; for >100K papers, consider incremental BM25 or external search engine.
-- Snowball API rate limits handled by `RateLimiter` (`--delay` pacing) plus an `--max-api-calls` budget; bounded runs resume by skipping already-expanded seeds.
+- Snowball API rate limits handled by `RateLimiter` (`--delay` pacing) plus an `--max-api-calls` budget; bounded runs resume by skipping already-expanded seeds, and `--resolve-only` resumes the resolve stage over rows still `pending` (idempotent, guarded by `resolved_paper_id IS NULL`).
 
 ## Security Considerations
 

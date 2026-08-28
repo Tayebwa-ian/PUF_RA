@@ -5,318 +5,24 @@ ref_doi,ref_title,ref_year,source,status,reason
 10.5555/2432453,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.5555/38407,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.34626/2024_xcoax_031,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1145/3613904.3642472,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.1080/23268743.2017.1396982,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1145/3664647.3681052,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/tvcg.2013.29,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.5555/212925.212927,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.46586/tches.v2019.i4.243-290,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.5555/2971808.2971870,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1145/3336497,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1007/978-3-031-13942-0_2,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1017/cbo9780511597954,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1002/j.1538-7305.1948.tb01338.x,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1093/acprof:oso/9780199580828.001.0001,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1515/9781400873296,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.7551/mitpress/11905.001.0001,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.23919/cje.2022.00.310,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.1109/ton,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.1007/978--3-031--85960--1_19,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.1207/s15326969eco05011,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/tifs.2021.3106169,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1016/j.rser.2023.113401,"Towards cyber security for low-carbon transportation: Overview, challenges and future directions",2023,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.4271/j3016_202104,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/lsens.2022.3153931,Hybrid quantum-classical neural network for cloud-supported in-vehicle cyberattack detection,2022,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1016/j.vehcom.2022.100515,A systematic survey of attack detection and prevention in connected and autonomous vehicles,2022,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.6028/nist.cswp.29,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/jiot.2022.3152477,A review on cybersecurity of cloud computing for supporting connected vehicle applications,2022,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/sp46215.2023.10179420,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1007/11681878_14,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.5555/975541,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/sfcs.1982.38,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.5555/3600270.3602913,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.48550/arxiv.2104.05030,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1037//0022-006x.52.3.414,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1037/13129-000,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.4233/uuid:,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.6028/nist.ir.8413-upd1,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.1007/978-3-642-19571-616,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.2824/349493,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/eurospw61312.2024.00046,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 10.1007/978-3-319-38930-11,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1016/j.vehcom.2022.100515,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-10.1109/sfcs.1982.38,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
-,Privacy by design: The 7 foundational principles. Information and privacy commissioner of Ontario,2009,crossref,pending,not yet processed
-,Differentially Private Empirical Risk Minimization,2011,crossref,pending,not yet processed
-,Finding a needle in a haystack or identifying anonymous census records,1986,crossref,pending,not yet processed
-,Ridge Regression,2000,crossref,pending,not yet processed
-,A Practical Differentially Private Random Decision Tree Classifier,2012,crossref,pending,not yet processed
-,Dropout: a simple way to prevent neural networks from overfitting,2014,crossref,pending,not yet processed
-,Provably secure authenticated key agreement scheme for smart grid,2016,crossref,pending,not yet processed
-,On actor-network theory: A few clarifications,1996,crossref,pending,not yet processed
-,MATch: Differentiable material graphs for procedural material capture,2020,crossref,pending,not yet processed
-,Fake-Vertising and Mobile Games: Case Study of “Pull the Pin,2020,crossref,pending,not yet processed
-,The Big Hack: How China Used a Tiny Chip to Infiltrate U.S. Companies,2018,crossref,pending,not yet processed
-,Afrofuturism and Post-Soul Possibility in Black Popular Music,2007,crossref,pending,not yet processed
-,June Tyson: On Erasure and Relevance,2025,crossref,pending,not yet processed
-,"A Cyborg Manifesto: Science, Technology, and Socialist Feminism in the Late Twentieth Century",1984,crossref,pending,not yet processed
-,"Making a Killing: On Race, Ritual, and (Re)Membering in Digital Culture. Preservation",2019,crossref,pending,not yet processed
-,Engaging the black ethos: Afrofuturism as a design lens for inclusive technological innovation,2019,crossref,pending,not yet processed
-,Classifying WCAG 2.0 guidelines as the legal standard for website under title III of the Americans with disabilities act,2019,crossref,pending,not yet processed
-,An embodied sense of programming: An anti-ableist framework for the analysis of learners’ developing senses of programming,2025,crossref,pending,not yet processed
-,Transforming public education: The need for an educational justice movement,2014,crossref,pending,not yet processed
-,Restructurations: Reformulations of knowledge disciplines through new representational forms,2010,crossref,pending,not yet processed
-,Utilizing the variability of resistive random access memory to implement reconfigurable physical unclonable functions,2014,crossref,pending,not yet processed
-,Laser-induced single-bit faults in flash memory: Instructions corruption on a 32-bit microcontroller,2018,crossref,pending,not yet processed
-,Present and future non-volatile memories for space,2010,crossref,pending,not yet processed
-,Security vulnerabilities of emerging nonvolatile main memories and countermeasures,2014,crossref,pending,not yet processed
-,Physical unclonable functions using ferroelectric tunnel junctions,2021,crossref,pending,not yet processed
-,True random number generation using latency variations of FRAM,2020,crossref,pending,not yet processed
-,It’s getting hot in here: Hardware security implications of thermal crosstalk on ReRAMs,2024,crossref,pending,not yet processed
-,A survey on true random number generators based on chaos,2019,crossref,pending,not yet processed
-,SeqL+: Secure scan-obfuscation with theoretical and empirical validation,2022,crossref,pending,not yet processed
-,"Advances in Stakeholder-Centric Product Lifecycle Management for Complex, Multi-Stakeholder Energy Program Ecosystems",2021,crossref,pending,not yet processed
-,Service design and change of systems: Human-centered approaches to implementing and spreading service design,2011,crossref,pending,not yet processed
-,The learl1ed nonuse phenomenon: implications for rehabilitation,2006,crossref,pending,not yet processed
-,Deep reinforcement learning from human preferences,2017,crossref,pending,not yet processed
-,“It brings the good vibes”: Exploring biomorphic aesthetics in the design of soft personal robots,2023,crossref,pending,not yet processed
-,Ex silico: Soft biomorphs,2024,crossref,pending,not yet processed
-,Exploring computational materials as fashion materials: Recommendations for designing fashionable wearables,2018,crossref,pending,not yet processed
-,"Wearable technologies: Between fashion, art, performance, and science (fiction)",2019,crossref,pending,not yet processed
-,A parallel feedback obfuscation strong PUF against machine-learning modeling attacks and lightweight authentication protocol,2025,crossref,pending,not yet processed
-,Feistel-PUF: Sequential obfuscation-based machine learning attack resistant physical unclonable function for IoT device security authentication,2025,crossref,pending,not yet processed
-,Calypso: An enhanced search optimization based framework to model delay-based PUFs,2024,crossref,pending,not yet processed
-,Deep Learning Based Model Building Attacks on Arbiter PUF Compositions,2019,crossref,pending,not yet processed
-,Challenging ableism: A critical turn toward disability justice in hci. XRDS: Crossroads,2024,crossref,pending,not yet processed
-,Toward interactive grounded language acquisition,2013,crossref,pending,not yet processed
-,"The theory of affordances. Perceiving, acting, and knowing: Toward an ecological psychology",1977,crossref,pending,not yet processed
-,Semantics as syntax,2017,crossref,pending,not yet processed
-,Integrated circuit security: An overview,2015,crossref,pending,not yet processed
-,Overview of meltdown and spectre patches and their impacts,2018,crossref,pending,not yet processed
-,AxOSpike,2024,crossref,pending,not yet processed
-,Information security risks analysis and assessment in the passenger-autonomous vehicle interaction.,2022,crossref,pending,not yet processed
-,A threat analysis of the vehicle-to-grid charging protocol ISO 15118,2018,crossref,pending,not yet processed
-,Cybersecurity of plug-in electric vehicles: Cyberattack detection during charging,2020,crossref,pending,not yet processed
-,26262: Road vehicles-functional safety,2011,crossref,pending,not yet processed
-,Electric vehicle penetration and its impact on global oil demand: A survey of 2019 forecast trends,2019,crossref,pending,not yet processed
-,Remote exploitation of an unaltered passenger vehicle,2015,crossref,pending,not yet processed
-,The Road to Full Autonomous Driving: Mobileye and STMicroelectronics to Develop EyeQ5 System-on-Chip Targeting Sensor Fusion Central Computer for Autonomous Vehicles,2016,crossref,pending,not yet processed
-,Free-fall: Hacking tesla from wireless to can bus,2017,crossref,pending,not yet processed
-,A survey on cyber-security of connected and autonomous vehicles (CAVs),2021,crossref,pending,not yet processed
-,CARAMEL: Results on a secure architecture for connected and autonomous vehicles detecting GPS spoofing attacks,2021,crossref,pending,not yet processed
-,A practical wireless attack on the connected car and security protocol for in-vehicle CAN,2014,crossref,pending,not yet processed
-,Risks of cyber threats and developing robust security protocols within electric vehicle charging infrastructure,2022,crossref,pending,not yet processed
-,"Attention is all you need. NIPS’17, page 6000-6010",2017,crossref,pending,not yet processed
-,Arty a7: Artix-7 fpga development board,2024,crossref,pending,not yet processed
-,The cyber grand challenge and the future of cyber-autonomy,2018,crossref,pending,not yet processed
-,Point-of-Care Manufacturing”: Maker Perspectives on Digital Fabrication in Medical Practice,2019,crossref,pending,not yet processed
-,When Can I help,2012,crossref,pending,not yet processed
-,A screening device: children at risk for dental fears and management problems,1982,crossref,pending,not yet processed
-,Dental fear in an urban Swedish child population: prevalence and concomitant factors,1994,crossref,pending,not yet processed
-,"An investigation of participatory design with children-informant, balanced and facilitated design. In Interaction design and Children, Vol. 5",2002,crossref,pending,not yet processed
-10.1108/14636680810918586,,,crossref,pending,not yet processed
-10.1109/sceecs61402.2024.10482142,,,crossref,pending,not yet processed
-10.1109/iotm.001.2300109,,,crossref,pending,not yet processed
-10.1108/fs-02-2018-0020,,,crossref,pending,not yet processed
-10.4337/9781781008768.00012,,,crossref,pending,not yet processed
-10.18535/ijsrm/v12i04.ec04,,,crossref,pending,not yet processed
-10.1109/iv55152.2023.10186685,,,crossref,pending,not yet processed
-10.1109/secdev45635.2020.00028,,,crossref,pending,not yet processed
-10.3390/fi16030067,,,crossref,pending,not yet processed
-10.1007/978-3-031-61475-024,,,crossref,pending,not yet processed
-10.1109/tits.2021.3131668,,,crossref,pending,not yet processed
-10.1016/j.future.2024.107555,,,crossref,pending,not yet processed
-10.18725/oparu-53899,,,crossref,pending,not yet processed
-10.1016/j.inffus.2023.102135,,,crossref,pending,not yet processed
-10.1007/978-3-031-21530-85,,,crossref,pending,not yet processed
-10.1007/978-981-97-0641-919,,,crossref,pending,not yet processed
-10.1109/tec.2024.3355743,,,crossref,pending,not yet processed
-10.3390/info15010038,,,crossref,pending,not yet processed
-10.1145/3298981,,,crossref,pending,not yet processed
-10.1117/12.3039589,,,crossref,pending,not yet processed
-10.1109/tiv.2024.3446319,,,crossref,pending,not yet processed
-10.1109/tvt.2024.3432553,,,crossref,pending,not yet processed
-10.1109/mvt.2019.2921208,,,crossref,pending,not yet processed
-10.1016/j.ins.2018.10.024,,,crossref,pending,not yet processed
-10.48550/arxiv.2402.12617,,,crossref,pending,not yet processed
-10.1145/3708493.3712691,,,crossref,pending,not yet processed
-10.1145/3385412.3385964,,,crossref,pending,not yet processed
-10.1007/978-3-031-64626-3_8,,,crossref,pending,not yet processed
-10.1145/3728928,,,crossref,pending,not yet processed
-10.1109/sp46215.2023.10179314,,,crossref,pending,not yet processed
-10.14722/ndss.2024.24401,,,crossref,pending,not yet processed
-10.14722/ndss.2025.240797,,,crossref,pending,not yet processed
-10.1145/173262.155098,,,crossref,pending,not yet processed
-10.1145/2914770.2837674,,,crossref,pending,not yet processed
-10.1145/161494.161501,,,crossref,pending,not yet processed
-10.5555/977395.977673,,,crossref,pending,not yet processed
-10.1145/1250734.1250766,,,crossref,pending,not yet processed
-10.1145/3276511,,,crossref,pending,not yet processed
-10.1145/3711816,,,crossref,pending,not yet processed
-10.1145/3437801.3441604,,,crossref,pending,not yet processed
-10.1145/1250734.1250746,,,crossref,pending,not yet processed
-10.1145/3650212.3680301,,,crossref,pending,not yet processed
-10.1109/sp54263.2024.00152,,,crossref,pending,not yet processed
-10.1109/sp40000.2020.00036,,,crossref,pending,not yet processed
-10.1145/3702988,,,crossref,pending,not yet processed
-10.1109/icsme58944.2024.00012,,,crossref,pending,not yet processed
-10.1145/3192366.3192418,,,crossref,pending,not yet processed
-10.1109/sp.2016.17,,,crossref,pending,not yet processed
-10.1145/3133956.3134105,,,crossref,pending,not yet processed
-10.1145/3643729,,,crossref,pending,not yet processed
-10.1145/3658644.3690244,,,crossref,pending,not yet processed
-10.1145/3728958,,,crossref,pending,not yet processed
-10.1145/3715754,,,crossref,pending,not yet processed
-10.1145/3658644.3670340,,,crossref,pending,not yet processed
-10.14722/ndss.2025.240276,,,crossref,pending,not yet processed
-10.1145/3622781.3674177,,,crossref,pending,not yet processed
-10.1145/3729386,,,crossref,pending,not yet processed
-10.1145/3728927,,,crossref,pending,not yet processed
-10.1145/2103656.2103709,,,crossref,pending,not yet processed
-10.1145/3640337,,,crossref,pending,not yet processed
-10.1145/3620665.3640382,,,crossref,pending,not yet processed
-10.1016/j.cose.2021.102557,,,crossref,pending,not yet processed
-10.1016/j.infsof.2021.106693,,,crossref,pending,not yet processed
-10.2196/jmir.5604,,,crossref,pending,not yet processed
-10.1145/3197231.3197263,,,crossref,pending,not yet processed
-10.1016/j.cola.2019.02.001,,,crossref,pending,not yet processed
-10.1016/j.infsof.2023.107353,,,crossref,pending,not yet processed
-10.1007/978-3-030-70006-5_18,,,crossref,pending,not yet processed
-10.1109/tse.2022.3212329,,,crossref,pending,not yet processed
-10.1109/saner50967.2021.00055,,,crossref,pending,not yet processed
-10.1109/tse.2014.2360674,,,crossref,pending,not yet processed
-10.1145/3300176,,,crossref,pending,not yet processed
-10.1145/3377811.3380392,,,crossref,pending,not yet processed
-10.1007/978-1-4842-5308-3_2,,,crossref,pending,not yet processed
-10.3390/ijerph18073669,,,crossref,pending,not yet processed
-10.2196/15060,,,crossref,pending,not yet processed
-10.1145/1631097.1631109,,,crossref,pending,not yet processed
-10.1109/pacrim.2013.6625497,,,crossref,pending,not yet processed
-10.1145/3173574.3173589,,,crossref,pending,not yet processed
-10.1016/j.jss.2020.110819,,,crossref,pending,not yet processed
-10.1145/3503508,,,crossref,pending,not yet processed
-10.37573/9781585284597,,,crossref,pending,not yet processed
-10.2196/humanfactors.5443,,,crossref,pending,not yet processed
-10.1371/journal.pone.0237910,,,crossref,pending,not yet processed
-10.1007/978-3-030-23525-3_68,,,crossref,pending,not yet processed
-10.1007/s10209-022-00903-w,,,crossref,pending,not yet processed
-10.1109/access.2020.2981892,,,crossref,pending,not yet processed
-10.2196/18198,,,crossref,pending,not yet processed
-10.1186/s40064-016-2171-z,,,crossref,pending,not yet processed
-10.1080/0141192870130107,,,crossref,pending,not yet processed
-10.1093/jamia/ocy050,,,crossref,pending,not yet processed
-10.1371/journal.pone.0215806,,,crossref,pending,not yet processed
-10.1109/access.2020.2999934,,,crossref,pending,not yet processed
-10.1177/2055207619886463,,,crossref,pending,not yet processed
-10.2196/16844,,,crossref,pending,not yet processed
-10.2196/mhealth.3422,,,crossref,pending,not yet processed
-10.1016/j.pmcj.2017.06.021,,,crossref,pending,not yet processed
-10.5555/2729485.2729549,,,crossref,pending,not yet processed
-10.1177/1064804619840731,,,crossref,pending,not yet processed
-10.2196/jmir.5043,,,crossref,pending,not yet processed
-10.1007/978-3-319-60597-5_22,,,crossref,pending,not yet processed
-10.2196/13057,,,crossref,pending,not yet processed
-10.1109/tpc.2017.2761578,,,crossref,pending,not yet processed
-10.1016/j.maturitas.2020.05.003,,,crossref,pending,not yet processed
-10.1186/1475-9276-12-85,,,crossref,pending,not yet processed
-10.1007/978-3-030-58805-2_32,,,crossref,pending,not yet processed
-10.2196/17256,,,crossref,pending,not yet processed
-10.1007/s12553-020-00518-2,,,crossref,pending,not yet processed
-10.2196/29922,,,crossref,pending,not yet processed
-10.1145/2568225.2568276,,,crossref,pending,not yet processed
-10.1007/978-1-84800-044-5_3,,,crossref,pending,not yet processed
-10.1007/978-1-84800-044-5_2,,,crossref,pending,not yet processed
-10.1016/j.procs.2014.02.041,,,crossref,pending,not yet processed
-10.1145/3007120.3007135,,,crossref,pending,not yet processed
-10.1145/3348797,,,crossref,pending,not yet processed
-10.1109/icsme.2019.00014,,,crossref,pending,not yet processed
-10.1016/j.jbi.2016.02.002,,,crossref,pending,not yet processed
-10.1007/s10664-022-10222-6,,,crossref,pending,not yet processed
-10.1109/icpc52881.2021.00050,,,crossref,pending,not yet processed
-10.1186/s12911-017-0535-0,,,crossref,pending,not yet processed
-10.1007/s10916-014-0181-3,,,crossref,pending,not yet processed
-10.2196/jmir.6838,,,crossref,pending,not yet processed
-10.1007/s41347-020-00180-5,,,crossref,pending,not yet processed
-10.1111/nin.12333,,,crossref,pending,not yet processed
-10.2196/jmir.3283,,,crossref,pending,not yet processed
-10.1145/638249.638277,,,crossref,pending,not yet processed
-10.6028/nist.ir.7804,,,crossref,pending,not yet processed
-10.15265/iy-2015-011,,,crossref,pending,not yet processed
-10.1145/3524613.3527817,,,crossref,pending,not yet processed
-10.1007/s10664-021-10072-8,,,crossref,pending,not yet processed
-10.1007/s10664-024-10504-1,,,crossref,pending,not yet processed
-10.1109/jsen.2021.3114266,,,crossref,pending,not yet processed
-10.1145/3001836,,,crossref,pending,not yet processed
-10.1109/mcomstd.0001.2100012,Leveraging blockchain for secure drone-to-everything communications,2021,crossref,pending,not yet processed
-10.1145/3372297.3417858,,,crossref,pending,not yet processed
-10.1109/sp40000.2020.00061,,2020,crossref,pending,not yet processed
-10.1109/comst.2024.3515051,,,crossref,pending,not yet processed
-10.1109/twc.2019.2935201,,,crossref,pending,not yet processed
-10.1145/3548606.3560627,,,crossref,pending,not yet processed
-10.1145/3456631,,,crossref,pending,not yet processed
-10.1007/978-94-007-5170-5_1,,2013,crossref,pending,not yet processed
-10.3390/rs10060908,Issues in unmanned aerial systems (UAS) data collection of complex forest environments,2018,crossref,pending,not yet processed
-10.1016/j.sysarc.2021.102344,,,crossref,pending,not yet processed
-10.1007/978-3-030-66626-2_8,,2020,crossref,pending,not yet processed
-10.1109/comst.2015.2495297,,,crossref,pending,not yet processed
-,Review of unmanned aircraft system (UAS),2013,crossref,pending,not yet processed
-10.1109/mnet.011.2000151,Emerging drone trends for blockchain-based 5G networks: Open issues and future perspectives,2021,crossref,pending,not yet processed
-10.1109/comst.2021.3097916,,,crossref,pending,not yet processed
-10.1109/mwc.2016.1600073wc,,,crossref,pending,not yet processed
-10.1109/milcom.2016.7795496,,2016,crossref,pending,not yet processed
-10.1109/msec.2019.2947124,,,crossref,pending,not yet processed
-10.1109/ths.2012.6459914,,2012,crossref,pending,not yet processed
-10.1109/tii.2022.3170348,Blockchain-based federated learning with secure aggregation in trusted execution environment for internet-of-things,2022,crossref,pending,not yet processed
-10.1109/red-uas.2017.8101648,,2017,crossref,pending,not yet processed
-10.1007/s10712-019-09529-9,New opportunities for forest remote sensing through ultra-high-density drone lidar,2019,crossref,pending,not yet processed
-10.1002/rob.21513,,,crossref,pending,not yet processed
-10.1016/j.cose.2022.102628,Vulnerability analysis of qualcomm secure execution environment (QSEE),2022,crossref,pending,not yet processed
-10.1023/a:1008354106356,,,crossref,pending,not yet processed
-10.1109/ssrr.2017.8088163,,,crossref,pending,not yet processed
-10.1109/glocomw.2013.6825193,,2013,crossref,pending,not yet processed
-10.1109/mcom.2017.1700390,,,crossref,pending,not yet processed
-10.1145/3341301.3359627,,,crossref,pending,not yet processed
-,Extending on-chain trust to off-chain–trustworthy blockchain data collection using trusted execution environment (tee),2022,crossref,pending,not yet processed
-,Multi-agent actor-critic for mixed cooperative-competitive environments,2017,crossref,pending,not yet processed
-,Drones hijacking,2016,crossref,pending,not yet processed
-10.1109/jiot.2023.3252565,,,crossref,pending,not yet processed
-,Reinforcement learning-based security/safety uav system for intrusion detection under dynamic and uncertain target movement,2022,crossref,pending,not yet processed
-,Drones and aerial surveillance: Considerations for legislators,2014,crossref,pending,not yet processed
-10.1016/j.comnet.2023.109626,,,crossref,pending,not yet processed
-,Drone incidents: A survey of legal cases,2017,crossref,pending,not yet processed
-10.1145/3700418,,,crossref,pending,not yet processed
-10.1016/j.cose.2023.103180,,,crossref,pending,not yet processed
-10.1109/sp40001.2021.00005,,2021,crossref,pending,not yet processed
-,Hacking drones... overview of the main threats,2013,crossref,pending,not yet processed
-,Security scheme of UAV flight control based on attribute access control policy,2024,crossref,pending,not yet processed
-,Privadome: Delivery drones and citizen privacy,2024,crossref,pending,not yet processed
-10.1145/3291047,,,crossref,pending,not yet processed
-10.1109/jiot.2020.2969326,,,crossref,pending,not yet processed
-10.1145/3485272,"A security review in the UAVNet era: Threats, countermeasures, and gap analysis",2022,crossref,pending,not yet processed
-10.1109/trustcom.2015.357,,2015,crossref,pending,not yet processed
-,Strengthening VM isolation with integrity protection and more,2020,crossref,pending,not yet processed
-10.1109/tii.2019.2922039,,,crossref,pending,not yet processed
-10.1145/3098954.3098971,,,crossref,pending,not yet processed
-10.3934/mbe.2022121,,,crossref,pending,not yet processed
-10.1016/j.jisa.2019.06.010,,,crossref,pending,not yet processed
-10.1049/ecej:20010303,High-altitude platforms for wireless communications,2001,crossref,pending,not yet processed
-10.1016/j.adhoc.2022.102894,A survey of cyber security threats and solutions for UAV communications and flying ad-hoc networks,2022,crossref,pending,not yet processed
-10.1016/s1574-6526(07)03024-6,,,crossref,pending,not yet processed
-10.1145/3301293.3302370,,,crossref,pending,not yet processed
-,Blockchain-based solutions for various security issues in UAV-enabled IoT,2021,crossref,pending,not yet processed
-10.1109/sp54263.2024.00070,,2024,crossref,pending,not yet processed
-10.23919/icn.2021.0018,Blockchain-envisioned unmanned aerial vehicle communications in space-air-ground integrated network: A review,2021,crossref,pending,not yet processed
-,"Authentication protocols for the internet of drones: Taxonomy, analysis and future directions",2018,crossref,pending,not yet processed
-,Reinforcement learning,2012,crossref,pending,not yet processed
-10.5555/2960587.2960655,,,crossref,pending,not yet processed
-10.1109/tvt.2020.3014788,,,crossref,pending,not yet processed
-10.1109/jiot.2023.3321308,PACTA: An IoT data privacy regulation compliance scheme using TEE and blockchain,2023,crossref,pending,not yet processed
-10.1145/3319535.3363205,,,crossref,pending,not yet processed
-10.1007/s11704-019-9096-y,,,crossref,pending,not yet processed
-10.1109/sp40000.2020.00054,,,crossref,pending,not yet processed
-10.1016/j.cad.2026.104129,Knit2Vector: 3D knitted texture reconstruction from unconstrained images via differentiable vectorization,2026,openalex,pending,not yet processed
-10.1109/southeastcon63549.2026.11476373,Selecting Emerging Non-Volatile Memories for Embedded and IoT Systems: A Practical Guide,2026,openalex,pending,not yet processed
-10.1109/vts69484.2026.11563388,Security Vulnerabilities of Semiconductor Memories,2026,openalex,pending,not yet processed
+10.1007/978-3-031-61475-024,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
+10.18725/oparu-53899,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
+10.1007/978-3-031-21530-85,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
+10.1007/978-981-97-0641-919,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
+10.5555/977395.977673,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
+10.5555/2960587.2960655,,,crossref,fetch_error,both sources failed (404/error on Crossref and OpenAlex)
 ,,,crossref,unresolved_no_doi,no DOI and no title metadata to recover
 ,,,crossref,unresolved_no_doi,no DOI and no title metadata to recover
 ,,,crossref,unresolved_no_doi,no DOI and no title metadata to recover
@@ -1722,3 +1428,61 @@ ref_doi,ref_title,ref_year,source,status,reason
 ,,2019,crossref,unresolved_no_doi,no DOI and no title metadata to recover
 ,,2019,crossref,unresolved_no_doi,no DOI and no title metadata to recover
 ,,,crossref,unresolved_no_doi,no DOI and no title metadata to recover
+,Privacy by design: The 7 foundational principles. Information and privacy commissioner of Ontario,2009,crossref,unresolved_title_failed,title search found no confident match
+,Differentially Private Empirical Risk Minimization,2011,crossref,unresolved_title_failed,title search found no confident match
+,Finding a needle in a haystack or identifying anonymous census records,1986,crossref,unresolved_title_failed,title search found no confident match
+,A Practical Differentially Private Random Decision Tree Classifier,2012,crossref,unresolved_title_failed,title search found no confident match
+,Dropout: a simple way to prevent neural networks from overfitting,2014,crossref,unresolved_title_failed,title search found no confident match
+,On actor-network theory: A few clarifications,1996,crossref,unresolved_title_failed,title search found no confident match
+,MATch: Differentiable material graphs for procedural material capture,2020,crossref,unresolved_title_failed,title search found no confident match
+,Fake-Vertising and Mobile Games: Case Study of “Pull the Pin,2020,crossref,unresolved_title_failed,title search found no confident match
+,The Big Hack: How China Used a Tiny Chip to Infiltrate U.S. Companies,2018,crossref,unresolved_title_failed,title search found no confident match
+,June Tyson: On Erasure and Relevance,2025,crossref,unresolved_title_failed,title search found no confident match
+,"A Cyborg Manifesto: Science, Technology, and Socialist Feminism in the Late Twentieth Century",1984,crossref,unresolved_title_failed,title search found no confident match
+,"Making a Killing: On Race, Ritual, and (Re)Membering in Digital Culture. Preservation",2019,crossref,unresolved_title_failed,title search found no confident match
+,Engaging the black ethos: Afrofuturism as a design lens for inclusive technological innovation,2019,crossref,unresolved_title_failed,title search found no confident match
+,Classifying WCAG 2.0 guidelines as the legal standard for website under title III of the Americans with disabilities act,2019,crossref,unresolved_title_failed,title search found no confident match
+,Transforming public education: The need for an educational justice movement,2014,crossref,unresolved_title_failed,title search found no confident match
+,Restructurations: Reformulations of knowledge disciplines through new representational forms,2010,crossref,unresolved_title_failed,title search found no confident match
+,It’s getting hot in here: Hardware security implications of thermal crosstalk on ReRAMs,2024,crossref,unresolved_title_failed,title search found no confident match
+,"Advances in Stakeholder-Centric Product Lifecycle Management for Complex, Multi-Stakeholder Energy Program Ecosystems",2021,crossref,unresolved_title_failed,title search found no confident match
+,Service design and change of systems: Human-centered approaches to implementing and spreading service design,2011,crossref,unresolved_title_failed,title search found no confident match
+,The learl1ed nonuse phenomenon: implications for rehabilitation,2006,crossref,unresolved_title_failed,title search found no confident match
+,Deep reinforcement learning from human preferences,2017,crossref,unresolved_title_failed,title search found no confident match
+,Ex silico: Soft biomorphs,2024,crossref,unresolved_title_failed,title search found no confident match
+,Exploring computational materials as fashion materials: Recommendations for designing fashionable wearables,2018,crossref,unresolved_title_failed,title search found no confident match
+,Feistel-PUF: Sequential obfuscation-based machine learning attack resistant physical unclonable function for IoT device security authentication,2025,crossref,unresolved_title_failed,title search found no confident match
+,Deep Learning Based Model Building Attacks on Arbiter PUF Compositions,2019,crossref,unresolved_title_failed,title search found no confident match
+,Challenging ableism: A critical turn toward disability justice in hci. XRDS: Crossroads,2024,crossref,unresolved_title_failed,title search found no confident match
+,Toward interactive grounded language acquisition,2013,crossref,unresolved_title_failed,title search found no confident match
+,"The theory of affordances. Perceiving, acting, and knowing: Toward an ecological psychology",1977,crossref,unresolved_title_failed,title search found no confident match
+,Semantics as syntax,2017,crossref,unresolved_title_failed,title search found no confident match
+,Integrated circuit security: An overview,2015,crossref,unresolved_title_failed,title search found no confident match
+,Overview of meltdown and spectre patches and their impacts,2018,crossref,unresolved_title_failed,title search found no confident match
+,AxOSpike,2024,crossref,unresolved_title_failed,title search found no confident match
+,Information security risks analysis and assessment in the passenger-autonomous vehicle interaction.,2022,crossref,unresolved_title_failed,title search found no confident match
+,26262: Road vehicles-functional safety,2011,crossref,unresolved_title_failed,title search found no confident match
+,Electric vehicle penetration and its impact on global oil demand: A survey of 2019 forecast trends,2019,crossref,unresolved_title_failed,title search found no confident match
+,Remote exploitation of an unaltered passenger vehicle,2015,crossref,unresolved_title_failed,title search found no confident match
+,The Road to Full Autonomous Driving: Mobileye and STMicroelectronics to Develop EyeQ5 System-on-Chip Targeting Sensor Fusion Central Computer for Autonomous Vehicles,2016,crossref,unresolved_title_failed,title search found no confident match
+,Free-fall: Hacking tesla from wireless to can bus,2017,crossref,unresolved_title_failed,title search found no confident match
+,Risks of cyber threats and developing robust security protocols within electric vehicle charging infrastructure,2022,crossref,unresolved_title_failed,title search found no confident match
+,"Attention is all you need. NIPS’17, page 6000-6010",2017,crossref,unresolved_title_failed,title search found no confident match
+,Arty a7: Artix-7 fpga development board,2024,crossref,unresolved_title_failed,title search found no confident match
+,The cyber grand challenge and the future of cyber-autonomy,2018,crossref,unresolved_title_failed,title search found no confident match
+,Point-of-Care Manufacturing”: Maker Perspectives on Digital Fabrication in Medical Practice,2019,crossref,unresolved_title_failed,title search found no confident match
+,When Can I help,2012,crossref,unresolved_title_failed,title search found no confident match
+,Dental fear in an urban Swedish child population: prevalence and concomitant factors,1994,crossref,unresolved_title_failed,title search found no confident match
+,"An investigation of participatory design with children-informant, balanced and facilitated design. In Interaction design and Children, Vol. 5",2002,crossref,unresolved_title_failed,title search found no confident match
+,Review of unmanned aircraft system (UAS),2013,crossref,unresolved_title_failed,title search found no confident match
+,Extending on-chain trust to off-chain–trustworthy blockchain data collection using trusted execution environment (tee),2022,crossref,unresolved_title_failed,title search found no confident match
+,Multi-agent actor-critic for mixed cooperative-competitive environments,2017,crossref,unresolved_title_failed,title search found no confident match
+,Drones hijacking,2016,crossref,unresolved_title_failed,title search found no confident match
+,Reinforcement learning-based security/safety uav system for intrusion detection under dynamic and uncertain target movement,2022,crossref,unresolved_title_failed,title search found no confident match
+,Drones and aerial surveillance: Considerations for legislators,2014,crossref,unresolved_title_failed,title search found no confident match
+,Drone incidents: A survey of legal cases,2017,crossref,unresolved_title_failed,title search found no confident match
+,Hacking drones... overview of the main threats,2013,crossref,unresolved_title_failed,title search found no confident match
+,Security scheme of UAV flight control based on attribute access control policy,2024,crossref,unresolved_title_failed,title search found no confident match
+,Strengthening VM isolation with integrity protection and more,2020,crossref,unresolved_title_failed,title search found no confident match
+,Blockchain-based solutions for various security issues in UAV-enabled IoT,2021,crossref,unresolved_title_failed,title search found no confident match
+,Reinforcement learning,2012,crossref,unresolved_title_failed,title search found no confident match

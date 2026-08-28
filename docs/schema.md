@@ -255,7 +255,7 @@ Written by the MCP `store_analysis` tool (or `AnalysisClient.store`) and read vi
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | id | INTEGER | PK, AUTOINCREMENT | Primary key |
-| direction | TEXT | NULLABLE | `backward` / `forward` |
+| direction | TEXT | NULLABLE | `backward` / `forward` for a harvest run; `resolve` for a `--resolve-only` (Phase-2) run |
 | source | TEXT | NULLABLE | API used (e.g. Crossref / Semantic Scholar) |
 | seed_count | INTEGER | NULLABLE | Seed papers processed |
 | references_harvested | INTEGER | NOT NULL DEFAULT 0 | References written to `reference_lists` |

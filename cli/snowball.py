@@ -1,4 +1,4 @@
-"""CLI: run snowball / backward search (legacy + two-phase local-first)."""
+"""CLI: run snowball / backward search (two-phase, local-first)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,7 @@ import sys
 from typing import Optional
 
 from src.db import get_connection
-from src.snowball import run_snowball
-from src.rate_limiter import RateLimiter
+from src.rate_limiter import RateLimiter, DEFAULT_SOURCE_INTERVALS
 
 _COMMANDS = ("run", "stats", "backfill-abstracts")
 
@@ -38,7 +37,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--depth", type=int, default=1, help="Max snowball depth")
     parser.add_argument("--max-refs", type=int, default=15, help="Max refs per paper")
     parser.add_argument(
-        "--source", choices=["semantic_scholar", "crossref", "openalex", "s2"],
+        "--source", choices=["semantic_scholar", "crossref", "openalex", "s2", "zotero"],
         default="semantic_scholar",
     )
     parser.add_argument(
@@ -100,16 +99,9 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         help="Single-source resolution: do not fall back to the alternate "
              "source (resolve on Crossref or Semantic Scholar alone).",
     )
-
-
-def _uses_new_path(args: argparse.Namespace) -> bool:
-    return bool(
-        args.resolve_only
-        or args.zotero_sync
-        or args.direction != "backward"
-        or args.with_pdf
-        or args.mailto
-        or args.source in ("openalex", "s2", "semantic_scholar")
+    parser.add_argument(
+        "--no-batch", action="store_true",
+        help="Skip the OpenAlex batched multi-DOI pre-pass (per-DOI chain only).",
     )
 
 
@@ -135,7 +127,10 @@ def _run_new_path(conn, args) -> int:
         args.max_api_calls if args.max_api_calls and args.max_api_calls > 0 else None
     )
 
-    limiter = RateLimiter(min_interval=args.delay)
+    limiter = RateLimiter(
+        min_interval=args.delay,
+        per_source_intervals=DEFAULT_SOURCE_INTERVALS,
+    )
     if args.resolve_only:
         stats = resolve_reference_lists(
             conn, source=_legacy_to_new_source(args.source),
@@ -143,6 +138,7 @@ def _run_new_path(conn, args) -> int:
             assured=args.assured,
             export_path=args.export_unresolved or None,
             rate_limiter=limiter, no_alternate=args.no_alternate,
+            use_batch=not args.no_batch,
         )
         print(f"Resolve stats: {stats}")
         return 0
@@ -155,6 +151,7 @@ def _run_new_path(conn, args) -> int:
     directions = (
         ["forward", "backward"] if args.direction == "both" else [args.direction]
     )
+    total_new = 0
     for direction in directions:
         seeds = _cli_seeds(conn, seed_paper_ids, seed_query_ids)
         stats = harvest_references(
@@ -168,6 +165,7 @@ def _run_new_path(conn, args) -> int:
             assured=args.assured,
             export_path=args.export_unresolved or None,
             rate_limiter=limiter, no_alternate=args.no_alternate,
+            use_batch=not args.no_batch,
         )
         print(f"Harvest ({direction}) stats: {stats}")
         if args.with_pdf:
@@ -175,14 +173,28 @@ def _run_new_path(conn, args) -> int:
                 "SELECT COUNT(*) FROM papers WHERE pdf_url IS NOT NULL"
             ).fetchone()[0]
             print(f"Papers with a captured PDF link: {count}")
+        total_new += int((stats or {}).get("new_papers", 0))
+
+    if args.auto_relevance and total_new > 0:
+        from src.relevance import evaluate_corpus
+
+        print("Running relevance evaluation on updated corpus...")
+        evaluate_corpus(conn, store=True)
+        conn.commit()
+    elif args.auto_relevance:
+        print("No new papers; skipping relevance evaluation.")
+
     return 0
 
 
 def _legacy_to_new_source(source: str) -> str:
     # s2 / semantic_scholar are both the real Semantic Scholar source; never
-    # remap to crossref (the new resolver handles S2 directly).
+    # remap to crossref (the new resolver handles S2 directly). zotero is a
+    # local-library source and is passed through unchanged.
     if source == "s2":
         return "semantic_scholar"
+    if source == "zotero":
+        return "zotero"
     return source
 
 
@@ -204,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     backfill_parser.add_argument("--db", default="results.db", help="SQLite database path")
     backfill_parser.add_argument(
-        "--source", choices=["crossref", "openalex", "semantic_scholar", "s2"],
+        "--source", choices=["crossref", "openalex", "semantic_scholar", "s2", "zotero"],
         default="crossref",
         help="Primary source (Crossref/OpenAlex/Semantic Scholar). With default "
              "behaviour Crossref/OpenAlex retry each other on a miss, but "
@@ -226,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Single-source backfill: do not fall back to OpenAlex "
              "(Semantic Scholar is standalone; Crossref alone when set).",
     )
+    backfill_parser.add_argument(
+        "--no-batch", action="store_true",
+        help="Skip the OpenAlex batched multi-DOI pre-pass (per-DOI chain only).",
+    )
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help"):
@@ -237,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "stats":
+        from src.reference_store import snowball_coverage
         with get_connection(args.db) as conn:
             total_edges = conn.execute("SELECT COUNT(*) FROM snowball_edges").fetchone()[0]
             max_depth = conn.execute(
@@ -245,9 +262,17 @@ def main(argv: list[str] | None = None) -> int:
             child_count = conn.execute(
                 "SELECT COUNT(DISTINCT child_paper_id) FROM snowball_edges"
             ).fetchone()[0]
+            cov = snowball_coverage(conn)
         print(f"  Total snowball edges: {total_edges}")
         print(f"  Max depth: {max_depth}")
         print(f"  Papers discovered: {child_count}")
+        print(
+            f"  Coverage: papers={cov['papers_total']} "
+            f"missing_abstract={cov['papers_missing_abstract']} "
+            f"missing_title={cov['papers_missing_title']} "
+            f"resolved_missing_abstract={cov['resolved_missing_abstract']} "
+            f"resolved_missing_title={cov['resolved_missing_title']}"
+        )
         return 0
 
     if args.command == "backfill-abstracts":
@@ -257,7 +282,10 @@ def main(argv: list[str] | None = None) -> int:
 
         with get_connection(args.db) as conn:
             ensure_schema(conn)
-            limiter = RateLimiter(min_interval=args.delay)
+            limiter = RateLimiter(
+                min_interval=args.delay,
+                per_source_intervals=DEFAULT_SOURCE_INTERVALS,
+            )
             n = backfill_abstracts(
                 conn,
                 source=args.source,
@@ -265,35 +293,13 @@ def main(argv: list[str] | None = None) -> int:
                 max_api_calls=args.max_api_calls,
                 limiter=limiter,
                 no_alternate=args.no_alternate,
+                use_batch=not args.no_batch,
             )
         print(f"Backfilled abstracts for {n} paper(s).")
         return 0
 
-    if _uses_new_path(args):
-        with get_connection(args.db) as conn:
-            return _run_new_path(conn, args)
-
-    seed_query_ids = _parse_id_list(args.seed_query_ids) or args.query_ids
-    seed_paper_ids = _parse_id_list(args.seed_paper_ids)
-    max_api_calls = (
-        args.max_api_calls if args.max_api_calls and args.max_api_calls > 0 else None
-    )
-
     with get_connection(args.db) as conn:
-        stats = run_snowball(
-            conn,
-            seed_query_ids=seed_query_ids,
-            seed_paper_ids=seed_paper_ids,
-            depth=args.depth,
-            max_refs_per_paper=args.max_refs,
-            source=args.source,
-            delay=args.delay,
-            max_api_calls=max_api_calls,
-            auto_relevance=args.auto_relevance,
-            skip_expanded=not args.reexpand,
-        )
-    print(f"Snowball stats: {stats}")
-    return 0
+        return _run_new_path(conn, args)
 
 
 if __name__ == "__main__":

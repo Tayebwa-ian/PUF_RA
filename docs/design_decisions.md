@@ -96,24 +96,30 @@ This document records key architectural and design decisions with rationale, alt
 
 **Context:** Need to expand the literature review by following reference chains (backward + forward) and resolving each discovered reference to a `papers` row with full provenance.
 
+**The original flow is preserved.** The initial design — *collect a full list of references → validate them → extract titles and abstracts* — is implemented unchanged, just made modular and resumable as the **two-phase pipeline** in `src/reference_store.py`: **harvest** (`harvest_references`, collect and store the complete reference list per seed, direction-tagged, nothing dropped) → **resolve/validate** (`resolve_reference_lists`, validate each stored reference and extract DOI / title / authors / year) → **backfill** (`backfill_abstracts`, extract the abstracts that the resolve metadata lacked). Each stage is separately invocable (`--harvest-only`, `--resolve-only`, `puf snowball backfill-abstracts`) and idempotent.
+
+**Both directions are implemented, with different source support.** Backward search runs on Crossref (`message.reference`), OpenAlex (`referenced_works`) **and** Semantic Scholar (`s2_get_references`); forward search is implemented via OpenAlex `filter=cites:{openalex_id}` **only** — Crossref and Semantic Scholar forward search are explicitly unsupported and skipped — so `--direction forward` / `--direction both` must be combined with `--source openalex`.
+
 **Options Considered:**
-- **A. Semantic Scholar API (recommended, standalone):** Free tier, structured reference metadata, DOIs available, no API key. It is a **first-class, standalone** resolve source (alias `s2`) — it resolves references on its own, with **no mandatory Crossref/OpenAlex fallback**.
+- **A. Semantic Scholar API (recommended, standalone):** Free tier, structured reference metadata, DOIs available, no API key. It is a **first-class, standalone** resolve source (alias `s2`) — it resolves references on its own, with **no mandatory Crossref/OpenAlex *not-found* fallback** (by default it still falls back to OpenAlex/Crossref on a *rate-limit*).
 - **B. Crossref API:** Reliable DOI lookup, polite pool, but limited reference metadata; the natural *alternate* of OpenAlex.
 - **C. OpenAlex API:** Rich metadata + OA-PDF links, but enforces a daily polite-pool request budget that can be exhausted; the natural *alternate* of Crossref.
 - **D. Manual PDF parsing:** Too fragile, no scale.
 - **E. arXiv API:** Limited to preprints, not suitable for hardware security.
 
-**Decision:** Semantic Scholar is a **standalone first-class** resolve source (no mandatory Crossref/OpenAlex fallback). Crossref and OpenAlex are *alternates of each other* (a Crossref miss retries OpenAlex and vice-versa). All API traffic is paced by a shared `RateLimiter` (`--delay`, default `1.0s`), and `backfill_abstracts` is resilient (commit-per-paper, guards `RateLimitError`). Single-source resolution is available via `--no-alternate` (see Decision 8).
+**Decision:** Semantic Scholar is a **standalone first-class** resolve source for *not-found* DOIs (no mandatory Crossref/OpenAlex not-found fallback) but, like Crossref/OpenAlex, **falls back to the next platform when rate-limited** (HTTP 429) by default. Crossref and OpenAlex are *alternates of each other* (a Crossref miss retries OpenAlex and vice-versa). All API traffic is paced by a shared `RateLimiter` (`--delay`, default `1.0s`), and `backfill_abstracts` is resilient (commit-per-paper, guards `RateLimitError`). Single-source resolution is available via `--no-alternate` (see Decisions 8 and 9).
 
 **Rationale:**
 - S2 returns structured reference data with DOIs, authors, abstracts, and requires no API key.
-- Standing S2 up as a standalone source removes a hard dependency on any single fallback and lets a run complete even when the alternate source is unavailable.
+- Standing S2 up as a standalone source for *not-found* DOIs removes a hard dependency on any single not-found fallback and lets a run complete even when a single source is missing a record; a rate-limited source simply spills onto the next platform (Decision 9).
 - Crossref <-> OpenAlex remain a peer alternate pair so DOI-based resolution still has redundancy when desired.
 
 **Consequences:**
 - Rate limits (S2 ~100 req/5min) require explicit pacing via `--delay` (default `1.0s`); pacing now applies to **all** API calls through the shared `RateLimiter`, with adaptive backoff on failure and `Retry-After` honouring.
 - Many references may lack DOIs; title-based dedup is best-effort.
 - Resolution is idempotent and resumable; `backfill_abstracts` commits after each paper and never aborts the whole batch on a throttle.
+- The stages are decoupled, so a rate-limited or budget-bounded run only loses progress on the *current* stage: the harvested inventory stays in `reference_lists` and the next `--resolve-only` / `backfill-abstracts` run picks up exactly where the previous one stopped.
+- A forward pass depends on OpenAlex; when OpenAlex is throttled or its daily budget is exhausted, forward *harvesting* has no substitute source (backward harvesting and the whole resolve stage do).
 
 ---
 
@@ -157,7 +163,7 @@ This document records key architectural and design decisions with rationale, alt
 
 ## Decision 8: Single-Source Resolution (`--no-alternate`)
 
-**Context:** Crossref and OpenAlex are implemented as *alternates* of each other — a Crossref miss retries OpenAlex (and vice-versa). Semantic Scholar is already standalone. We needed a way to force resolution on a **single** source with no cross-source retry.
+**Context:** Crossref and OpenAlex are implemented as *alternates* of each other — a Crossref miss retries OpenAlex (and vice-versa). Semantic Scholar is standalone for *not-found* DOIs but gains a rate-limit fallback (Decision 9). We needed a way to force resolution on a **single** source with no cross-source retry at all (including on rate-limit).
 
 **Options Considered:**
 - **A. Always retry the alternate (`--no-alternate` absent):** Maximises recovery; uses OpenAlex as the Crossref fallback and vice-versa.
@@ -167,8 +173,93 @@ This document records key architectural and design decisions with rationale, alt
 
 **Rationale / Why it exists:**
 - **OpenAlex budget exhaustion.** OpenAlex's polite pool enforces a daily request budget. Once exhausted, its fallback becomes unavailable and a Crossref-led run can stall. `--no-alternate --source semantic_scholar` (or `--source crossref --no-alternate`) keeps resolution moving on a single source without depending on OpenAlex.
-- **Semantic Scholar preference.** When S2 is the preferred/primary source there is no OpenAlex fallback by design; `--no-alternate` makes the single-source contract explicit and also lets Crossref/OpenAlex be used in isolation when only that source is trustworthy or allowed.
+- **Semantic Scholar preference.** When S2 is the preferred/primary source there is no OpenAlex *not-found* fallback by design (a rate-limited S2 still falls back to OpenAlex/Crossref by default); `--no-alternate` makes the single-source contract explicit and also disables the rate-limit fallback, letting Crossref/OpenAlex be used in isolation when only that source is trustworthy or allowed.
 
 **Consequences:**
 - With `--no-alternate`, only the chosen source is attempted; a failed DOI is recorded as `fetch_error` rather than silently retried cross-source.
 - The run still stops gracefully and stays resumable (idempotent, `verify_retrieval` backstop); the next run can drop `--no-alternate` to fill remaining gaps via the alternate.
+
+
+---
+
+## Decision 9: Cross-source Fallback on Rate-Limit (HTTP 429)
+
+**Context:** A resolve or abstract-backfill run used to *abort gracefully* the moment any
+source raised `RateLimitError` (HTTP 429) — i.e. one throttled platform stopped the whole
+batch, wasting the remaining API budget on the other platforms. We wanted to maximise API
+utilisation: when one platform is rate-limited, try another and keep going.
+
+**Options Considered:**
+- **A. Abort the run on the first 429 (legacy):** Simple, but leaves other healthy platforms unused and forces a manual re-run.
+- **B. Cross-source fallback on 429 (recommended):** Maintain a per-source fallback chain and skip any throttled platform, continuing the batch until every candidate is throttled or the budget is exhausted.
+- **C. Retry the same platform forever:** Contradicts the `RateLimiter` give-up contract and risks bans.
+
+**Decision:** By default, resolution and abstract backfill switch to the next platform in
+`_SOURCE_RATELIMIT_CHAIN` whenever the current one returns HTTP 429, and the batch
+**continues** (no graceful abort):
+
+- `semantic_scholar` -> `openalex` -> `crossref` -> `zotero`
+- `openalex` -> `crossref` -> `zotero` -> `semantic_scholar`
+- `crossref` -> `openalex` -> `zotero` -> `semantic_scholar`
+
+Source-aware pacing applies per source (`DEFAULT_SOURCE_INTERVALS`): Crossref / OpenAlex
+polite pools run at ~0.05 s, Semantic Scholar at ~0.6 s (~100 req / 5 min), and Zotero is
+**instant** (a local read, not a rate-limited API). The **OpenAlex batched multi-DOI
+pre-pass** (`_openalex_batch_by_dois`) is active for the **OpenAlex resolve** source and for
+**Crossref/OpenAlex backfill** (Crossref *resolve* stays per-DOI); a **batched Zotero
+pre-pass** resolves DOIs from the local library before the slow S2 endpoint. Both pre-passes
+are additive and skipped under `--no-batch`, which opts out when OpenAlex itself is
+unavailable / budget-blocked.
+
+`--no-alternate` disables **all** cross-source fallback (strict single-source): a rate-limited
+source leaves its DOIs as `fetch_error` and the batch still continues (it never raises/aborts
+the whole run). A 404 / not-found does **NOT** trigger a cross-source fallback, except the
+existing Crossref<->OpenAlex 404-alternate (`_ALTERNATE_SOURCE`); Semantic Scholar stays
+standalone for not-found DOIs (a miss there returns `None` without contacting other platforms).
+If every candidate in the chain is throttled, the helper returns an empty result and the
+affected DOIs are recorded as `fetch_error` — the run finishes normally.
+
+**Rationale / Why it exists:**
+- **Maximise API utilisation.** A 429 on one platform should not block work the other platforms can still do within budget.
+- **Resilience.** A single throttled source degrades gracefully to a smaller result set instead of aborting the run.
+- **Strict mode preserved.** `--no-alternate` keeps a fully deterministic, single-source contract for constrained/reproducible runs (Decision 8).
+
+**Consequences:**
+- Title-search resolution (`_resolve_by_title`) is likewise rate-limit resilient: a 429 on OpenAlex retries Crossref and vice-versa; a single `primary` source yields no match rather than aborting.
+- `fetch_error` now also means "all attempted sources were rate-limited", not only "not found on the chosen source".
+- The legacy `except RateLimitError` abort remains as a defensive guard but is no longer reached on the DOI-resolution / backfill paths (it still triggers if an un-guarded code path raises).
+- **Where `aborted: 1` is still correct.** The seed reference-list fetch in `harvest_references` (stage 1 of the two-phase path) keeps the pre-TASK-010 graceful stop, because it queries a *single* source with no cross-source substitute: it stops harvesting, commits the inventory gathered so far and stays resumable. The **resolve** and **backfill** stages do **not** set `aborted` on a 429; they switch platform and continue (the resolve/backfill chains now end in a Zotero local-library lookup, Decision 10). Documentation must scope any "stops gracefully / `aborted: 1`" statement to the harvest seed-fetch case.
+
+
+## Decision 10 — Single snowball implementation + Zotero rate-limit fallback
+
+**Decision:** Remove the legacy `run_snowball` path and the standalone
+`scripts/run_snowball.py` runner (TASK-011). `src/snowball.py` becomes a
+shared-helper module only; `src/reference_store.py` is the single implementation
+of the snowball pipeline (`harvest_references`, `resolve_reference_lists`,
+`backfill_abstracts`). Zotero is added as a **last-resort** resolve/backfill
+source: `_SOURCE_RATELIMIT_CHAIN` places `"zotero"` immediately BEFORE
+  `"semantic_scholar"` (Zotero is the fast local pre-pass; S2 is the slow last resort), and
+`src.zotero_sync.lookup_doi_in_zotero` / `fetch_abstract_via_zotero` read the
+user's *local* Zotero library (`pyzotero`). Because that read is local it is
+**immune to external API rate limits** for papers already cached in Zotero, and
+it **never raises** — an unconfigured Zotero simply yields no match and the chain
+continues.
+
+**Rationale / Why it exists:**
+- **Dead-code removal.** Two snowball implementations (`run_snowball` + the
+  reference-store pipeline) duplicated logic and confused which path ran.
+  Consolidating on `reference_store` removes the split.
+- **Rate-limit resilience, continued.** When Crossref, OpenAlex *and* Semantic
+  Scholar are all throttled, a paper already saved in the operator's Zotero
+  library can still be resolved/abstracted instead of becoming `fetch_error`.
+- **Safety.** The Zotero branch cannot escape a `RateLimitError`; it degrades to
+  "no match" exactly like an empty external result.
+
+**Consequences:**
+- `--no-alternate` disables *all* cross-source fallback, including the Zotero
+  last resort, restoring a strictly single-source contract.
+- `puf snowball` is the only supported entry point; `scripts.run_snowball` no
+  longer exists. `auto_relevance` (re-running relevance evaluation when new
+  papers are inserted) is ported into the new path; LLM `auto_screen` remains out
+  of scope.

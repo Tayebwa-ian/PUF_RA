@@ -13,7 +13,7 @@ import pytest
 
 import src.snowball as snowball
 from src.db_schema import create_schema
-from src.rate_limiter import RateLimiter, RateLimitError
+from src.rate_limiter import RateLimiter, RateLimitError, DEFAULT_SOURCE_INTERVALS
 from src import reference_store, zotero_sync
 from src.reference_store import (
     harvest_references,
@@ -21,12 +21,14 @@ from src.reference_store import (
     get_reference_inventory,
     local_find_paper,
     backfill_abstracts,
+    snowball_coverage,
+    _openalex_batch_by_dois,
     _normalise_crossref_item,
     _normalise_openalex_work,
     _normalise_s2_reference,
     _find_or_create_ref_paper,
 )
-from src.snowball import _ensure_source_snowball
+from src.snowball import _ensure_source_snowball, normalise_doi
 
 
 def _memory_db():
@@ -575,11 +577,14 @@ def _pending_doi_ref(conn, seed, doi, title):
 
 
 def test_rate_limit_exports_unresolved_and_finishes_run(monkeypatch, tmp_path):
-    """A RateLimitError during resolution must still write the CSV + finish the run.
+    """A fully rate-limited resolve phase keeps going (cross-source fallback) and
+    still writes the CSV + finishes the run (no graceful abort).
 
     Regression for the ``export_unresolved`` parameter shadowing the module-level
     ``export_unresolved`` function (TypeError: 'str' object is not callable),
-    which silently skipped the CSV and left ``snowball_runs.finished_at`` NULL.
+    which silently skipped the CSV and left ``snowball_runs.finished_at`` NULL. With
+    TASK-010 the batch no longer aborts on HTTP 429: every platform is tried, the
+    affected DOIs become ``fetch_error`` and the run completes (``aborted == 0``).
     """
     conn = _memory_db()
     seed = _insert_paper(conn, "Seed A", doi="10.1/A")
@@ -595,8 +600,8 @@ def test_rate_limit_exports_unresolved_and_finishes_run(monkeypatch, tmp_path):
         assured=True, export_path=str(out_csv),
     )
 
-    assert stats["aborted"] == 1
-    assert out_csv.exists()  # graceful stop still exported the unresolved rows
+    assert stats["aborted"] == 0  # cross-source fallback: run continues, never aborts
+    assert out_csv.exists()  # run still exported the unresolved rows
     import csv as _csv
     with open(out_csv, newline="", encoding="utf-8") as fh:
         rows = list(_csv.DictReader(fh))
@@ -609,7 +614,9 @@ def test_rate_limit_exports_unresolved_and_finishes_run(monkeypatch, tmp_path):
 
 
 def test_harvest_rate_limit_exports_unresolved_and_finishes_run(monkeypatch, tmp_path):
-    """Same graceful-stop guarantee on the harvest_references resolve tail."""
+    """harvest_references keeps going when the resolve tail is fully rate-limited
+    (TASK-010 cross-source fallback): the run finishes and still exports the CSV,
+    instead of aborting."""
     conn = _memory_db()
     seed = _insert_paper(conn, "Seed A", doi="10.1/A")
 
@@ -631,7 +638,7 @@ def test_harvest_rate_limit_exports_unresolved_and_finishes_run(monkeypatch, tmp
         rate_limiter=_instant_limiter(), assured=True, export_path=str(out_csv),
     )
 
-    assert stats["aborted"] == 1
+    assert stats["aborted"] == 0  # resolve tail continues via cross-source fallback
     assert out_csv.exists()
     import csv as _csv
     with open(out_csv, newline="", encoding="utf-8") as fh:
@@ -755,7 +762,7 @@ def test_backfill_abstracts_crossref(monkeypatch):
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper Z", doi="10.9/z")  # abstract defaults to ""
 
-    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
         return {
             "message": {
                 "DOI": "10.9/z",
@@ -792,7 +799,7 @@ def test_backfill_abstracts_semantic_scholar(monkeypatch):
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper S", doi="10.7/s")
 
-    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
         assert "DOI:10.7/s" in url  # routed to the S2 paper endpoint
         return {
             "title": "Paper S",
@@ -858,7 +865,7 @@ def test_backfill_abstracts_respects_api_budget(monkeypatch):
     conn = _memory_db()
     _insert_paper(conn, "Paper Z", doi="10.9/z")
 
-    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
         return {"message": {"DOI": "10.9/z", "title": ["Z"], "abstract": "<p>x</p>"}}
 
     monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
@@ -955,7 +962,7 @@ class _RecordingLimiter:
         self.calls = 0
         self.max_retries = 5
 
-    def wait_before_call(self):
+    def wait_before_call(self, source=None):
         self.calls += 1
 
     def backoff_seconds(self, attempt, retry_after_header=None):
@@ -1044,7 +1051,7 @@ def test_backfill_resilient_to_rate_limit(monkeypatch):
     _insert_paper(conn, "Paper1", doi="10.1/a")
     _insert_paper(conn, "Paper2", doi="10.2/b")
 
-    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0):
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
         if "10.1/a" in url:
             raise RateLimitError("throttled")
         return {"title": "T", "abstract": "got it", "externalIds": {"DOI": "10.2/b"}}
@@ -1111,3 +1118,604 @@ def test_cli_run_maps_s2_source_to_semantic_scholar(monkeypatch):
     )
 
     assert captured["source"] == "semantic_scholar"
+
+
+# ---------------------------------------------------------------------------
+# TASK-010: cross-source fallback on rate-limit (HTTP 429)
+# ---------------------------------------------------------------------------
+
+def test_resolve_falls_back_on_ratelimit_crossref(monkeypatch):
+    """A rate-limited Crossref resolves via OpenAlex instead of aborting."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'crossref')",
+        (seed,),
+    )
+
+    def boom(*a, **k):
+        raise RateLimitError("crossref throttled")
+
+    monkeypatch.setattr(reference_store, "_crossref_resolve_dois", boom)
+    # keep the OpenAlex batch pre-pass hermetic + a no-op in this unit test
+    monkeypatch.setattr(reference_store, "_openalex_filter", lambda *a, **k: ([], 0))
+
+    def fake_oa(dois, mailto, limiter):
+        return [{
+            "doi": "10.2/x", "title": "Paper X via OpenAlex", "authors": "Y. Z",
+            "year": 2019, "publication_title": "V", "pdf_url": None,
+        }], 1
+
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", fake_oa)
+
+    stats = resolve_reference_lists(conn, source="crossref", assured=False)
+
+    row = conn.execute(
+        "SELECT status, resolved_paper_id FROM reference_lists"
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["resolved_paper_id"] is not None
+    paper = conn.execute(
+        "SELECT title, doi FROM papers WHERE id=?", (row["resolved_paper_id"],)
+    ).fetchone()
+    assert paper["title"] == "Paper X via OpenAlex"
+    assert paper["doi"] == "10.2/x"
+    assert stats["aborted"] == 0
+
+
+def test_resolve_falls_back_on_ratelimit_s2(monkeypatch):
+    """A rate-limited Semantic Scholar resolves via OpenAlex instead of aborting."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'semantic_scholar')",
+        (seed,),
+    )
+
+    def boom(*a, **k):
+        raise RateLimitError("s2 throttled")
+
+    monkeypatch.setattr(reference_store, "_s2_resolve_dois", boom)
+
+    def fake_oa(dois, mailto, limiter):
+        return [{
+            "doi": "10.2/x", "title": "Paper X via OpenAlex", "authors": "Y. Z",
+            "year": 2019, "publication_title": "V", "pdf_url": None,
+        }], 1
+
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", fake_oa)
+
+    stats = resolve_reference_lists(conn, source="semantic_scholar", assured=False)
+
+    row = conn.execute(
+        "SELECT status, resolved_paper_id FROM reference_lists"
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["resolved_paper_id"] is not None
+    paper = conn.execute(
+        "SELECT title FROM papers WHERE id=?", (row["resolved_paper_id"],)
+    ).fetchone()
+    assert paper["title"] == "Paper X via OpenAlex"
+    assert stats["aborted"] == 0
+
+
+def test_no_alternate_ratelimit_does_not_abort(monkeypatch):
+    """--no-alternate: a rate-limited source marks fetch_error and the run continues."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'semantic_scholar')",
+        (seed,),
+    )
+
+    def boom(*a, **k):
+        raise RateLimitError("s2 throttled")
+
+    monkeypatch.setattr(reference_store, "_s2_resolve_dois", boom)
+
+    stats = resolve_reference_lists(
+        conn, source="semantic_scholar", no_alternate=True, assured=False
+    )
+
+    # Returns normally: no exception escapes, the ref is fetch_error (not pending),
+    # and the run is NOT counted as aborted.
+    row = conn.execute("SELECT status FROM reference_lists").fetchone()
+    assert row["status"] == "fetch_error"
+    assert stats["aborted"] != 1
+
+
+def test_backfill_falls_back_on_ratelimit_s2(monkeypatch):
+    """A rate-limited S2 abstract fetch falls back to OpenAlex during backfill."""
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper S", doi="10.7/s")  # abstract defaults to ""
+
+    def boom(*a, **k):
+        raise RateLimitError("s2 throttled")
+
+    monkeypatch.setattr(reference_store, "_fetch_abstract_s2", boom)
+
+    def fake_oa(doi, mailto, limiter):
+        return "OpenAlex abstract text."
+
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", fake_oa)
+
+    updated = backfill_abstracts(conn, source="semantic_scholar")
+
+    assert updated == 1  # did not abort; abstract filled from OpenAlex
+    stored = conn.execute(
+        "SELECT abstract FROM papers WHERE id=?", (pid,)
+    ).fetchone()[0]
+    assert stored == "OpenAlex abstract text."
+
+
+def test_resolve_phase_completes_on_ratelimit(monkeypatch):
+    """When every source is throttled, the resolve phase completes (no abort)."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'crossref')",
+        (seed,),
+    )
+
+    def boom(*a, **k):
+        raise RateLimitError("throttled")
+
+    monkeypatch.setattr(reference_store, "_crossref_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_s2_resolve_dois", boom)
+    # keep the OpenAlex batch pre-pass hermetic + a no-op in this unit test
+    monkeypatch.setattr(reference_store, "_openalex_filter", lambda *a, **k: ([], 0))
+
+    stats = resolve_reference_lists(conn, source="crossref", assured=False)
+    assert stats["aborted"] == 0
+    row = conn.execute("SELECT status FROM reference_lists").fetchone()
+    assert row["status"] == "fetch_error"
+
+
+# ---------------------------------------------------------------------------
+# Zotero local-library fallback (rate-limit immune, last resort)
+# ---------------------------------------------------------------------------
+
+def test_zotero_fallback_on_ratelimit(monkeypatch):
+    """When every external API is throttled, Zotero resolves the DOI last."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'semantic_scholar')",
+        (seed,),
+    )
+
+    def boom(*a, **k):
+        raise RateLimitError("api throttled")
+
+    monkeypatch.setattr(reference_store, "_s2_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_crossref_resolve_dois", boom)
+
+    def fake_zotero_lookup(doi):
+        return {
+            "doi": "10.2/x",
+            "title": "Paper X via Zotero",
+            "authors": "Z. Zotero",
+            "year": 2021,
+            "abstract": "Zotero cached abstract.",
+        }
+
+    monkeypatch.setattr(zotero_sync, "lookup_doi_in_zotero", fake_zotero_lookup)
+
+    stats = resolve_reference_lists(conn, source="semantic_scholar", assured=False)
+
+    row = conn.execute(
+        "SELECT status, resolved_paper_id FROM reference_lists"
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["resolved_paper_id"] is not None
+    paper = conn.execute(
+        "SELECT title, doi FROM papers WHERE id=?", (row["resolved_paper_id"],)
+    ).fetchone()
+    assert paper["title"] == "Paper X via Zotero"
+    assert paper["doi"] == "10.2/x"
+    assert stats["aborted"] == 0
+
+
+def test_zotero_skipped_when_unconfigured(monkeypatch):
+    """No Zotero + all APIs throttled -> ref is fetch_error, run still completes."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'semantic_scholar')",
+        (seed,),
+    )
+
+    def boom(*a, **k):
+        raise RateLimitError("api throttled")
+
+    monkeypatch.setattr(reference_store, "_s2_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_crossref_resolve_dois", boom)
+    monkeypatch.setattr(zotero_sync, "lookup_doi_in_zotero", lambda doi: None)
+
+    stats = resolve_reference_lists(conn, source="semantic_scholar", assured=False)
+
+    row = conn.execute("SELECT status FROM reference_lists").fetchone()
+    assert row["status"] == "fetch_error"
+    assert stats["aborted"] != 1
+
+
+def test_backfill_falls_back_to_zotero(monkeypatch):
+    """A rate-limited abstract fetch falls back to Zotero during backfill."""
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper Z", doi="10.7/z")  # abstract defaults to ""
+
+    def boom(*a, **k):
+        raise RateLimitError("api throttled")
+
+    monkeypatch.setattr(reference_store, "_fetch_abstract_crossref", boom)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", boom)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_s2", boom)
+    monkeypatch.setattr(
+        zotero_sync, "fetch_abstract_via_zotero",
+        lambda doi, mailto=None, limiter=None: "Zotero abstract text.",
+    )
+    # keep the OpenAlex batch pre-pass hermetic + a no-op in this unit test
+    monkeypatch.setattr(reference_store, "_openalex_filter", lambda *a, **k: ([], 0))
+
+    updated = backfill_abstracts(conn, source="crossref")
+
+    assert updated == 1
+    stored = conn.execute(
+        "SELECT abstract FROM papers WHERE id=?", (pid,)
+    ).fetchone()[0]
+    assert stored == "Zotero abstract text."
+
+
+def test_lookup_doi_in_zotero_direct():
+    """lookup_doi_in_zotero extracts metadata from a fake Zotero client."""
+
+    class _FakeZotero:
+        def items(self, query, qmode="everything"):
+            return [{
+                "data": {
+                    "DOI": "10.1234/direct",
+                    "title": "Direct Zotero Paper",
+                    "creators": [
+                        {"creatorType": "author", "given": "Ada", "family": "Lovelace"},
+                        {"creatorType": "author", "given": "Alan", "family": "Turing"},
+                    ],
+                    "date": "2019-05-01",
+                    "abstractNote": "A directly fetched abstract.",
+                }
+            }]
+
+    result = zotero_sync.lookup_doi_in_zotero("10.1234/direct", zotero=_FakeZotero())
+    assert result is not None
+    assert result["doi"] == "10.1234/direct"
+    assert result["title"] == "Direct Zotero Paper"
+    assert result["authors"] == "Ada Lovelace; Alan Turing"
+    assert result["year"] == 2019
+    assert result["abstract"] == "A directly fetched abstract."
+
+
+# ---------------------------------------------------------------------------
+# TASK-013: source-aware pacing + OpenAlex batched multi-DOI lookup
+# ---------------------------------------------------------------------------
+
+def test_openalex_batch_backfill_fills_abstracts(monkeypatch):
+    """Batched OpenAlex lookup fills most abstracts in ceil(n/50) HTTP calls.
+
+    Proves batching (not per-DOI): the underlying ``_openalex_filter`` is hit once
+    per 50 DOIs, and ``backfill_abstracts`` fills every paper via the pre-pass.
+    """
+    conn = _memory_db()
+    n = 120
+    for i in range(n):
+        _insert_paper(conn, f"P{i}", doi=f"10.{i}/p{i}")
+
+    filter_calls = {"n": 0}
+
+    def fake_openalex_filter(filter_value, mailto, limiter):
+        filter_calls["n"] += 1
+        # the batch passes "doi:d1|d2|..."; one work per doi in the chunk
+        chunk = filter_value.split("doi:")[1].split("|")
+        works = [
+            {
+                "doi": dd,
+                "title": "T",
+                "authors": "",
+                "year": 2020,
+                "publication_title": "",
+                "pdf_url": None,
+                "abstract_inverted_index": {"abs": [0], "tract": [1]},
+            }
+            for dd in chunk
+        ]
+        return works, 1
+
+    monkeypatch.setattr(reference_store, "_openalex_filter", fake_openalex_filter)
+
+    updated = backfill_abstracts(conn, source="openalex")
+
+    assert updated == n
+    assert filter_calls["n"] == (n + 49) // 50  # ceil(n/50)
+    # every paper now has the reconstructed abstract
+    empty = conn.execute(
+        "SELECT COUNT(*) FROM papers WHERE abstract IS NULL OR abstract = ''"
+    ).fetchone()[0]
+    assert empty == 0
+
+
+def test_per_source_pacing(monkeypatch):
+    """Source-aware pacing: OpenAlex/Crossref ~0.05s, S2 ~0.6s, default 1.0s."""
+    import src.rate_limiter as rl
+
+    sleeps = []
+    monkeypatch.setattr(rl.time, "sleep", lambda s: sleeps.append(s))
+    # freeze the monotonic clock so each call is "immediate" -> sleeps the interval
+    monkeypatch.setattr(rl.time, "monotonic", lambda: 0.0)
+
+    limiter = RateLimiter(
+        min_interval=1.0,
+        per_source_intervals={"crossref": 0.05, "openalex": 0.05, "semantic_scholar": 0.6},
+    )
+    limiter.wait_before_call(source="crossref")   # prime: no sleep (no prior call)
+    limiter.wait_before_call(source="crossref")   # 0.05 (fast source)
+    limiter.wait_before_call(source="semantic_scholar")  # 0.6 (slow source)
+    limiter.wait_before_call()                    # default min_interval 1.0
+
+    # the prime call sleeps nothing; the three subsequent calls pace per source
+    assert sleeps == [0.05, 0.6, 1.0]
+
+
+def test_batch_resolve_prefers_openalex(monkeypatch):
+    """The OpenAlex batch pre-pass resolves DOIs without the per-DOI Crossref call."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'openalex')", (seed,),
+    )
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.3/Y', 'openalex')", (seed,),
+    )
+
+    def fake_batch(dois, mailto, limiter):
+        works = []
+        for d in dois:
+            nd = normalise_doi(d)
+            works.append({
+                "doi": nd, "title": f"Paper {nd}", "authors": "A. U.",
+                "year": 2021, "publication_title": "V", "pdf_url": None,
+                "abstract": "",
+            })
+        return works, 1
+
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", fake_batch)
+
+    crossref_calls = {"n": 0}
+    orig = reference_store._crossref_resolve_dois
+
+    def spy(dois, mailto, limiter):
+        crossref_calls["n"] += 1
+        return orig(dois, mailto, limiter)
+
+    monkeypatch.setattr(reference_store, "_crossref_resolve_dois", spy)
+
+    stats = resolve_reference_lists(conn, source="openalex", assured=False)
+
+    # Crossref was never contacted for these DOIs -- the batch pre-pass handled them.
+    assert crossref_calls["n"] == 0
+    rows = conn.execute(
+        "SELECT resolved_paper_id, status FROM reference_lists"
+    ).fetchall()
+    assert all(r["status"] == "resolved" for r in rows)
+    assert stats["new_papers"] == 2
+    assert stats["edges"] == 2
+
+
+def test_coverage_report(monkeypatch):
+    """snowball_coverage counts totals and resolved-but-missing metadata."""
+    conn = _memory_db()
+    _insert_paper(conn, "Has Both", doi="10.1/a", authors="X")
+    # give it a real abstract so it is NOT counted as missing
+    conn.execute(
+        "UPDATE papers SET abstract = 'complete abstract' WHERE doi = '10.1/a'"
+    )
+    _insert_paper(conn, "No Abstract", doi="10.2/b", authors="Y")  # abstract default ""
+    target = _insert_paper(conn, "Resolved Missing Abs", doi="10.3/c", authors="Z")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, "
+        "resolved_paper_id, status) VALUES (?, 'backward', '10.3/c', ?, 'resolved')",
+        (target, target),
+    )
+
+    cov = snowball_coverage(conn)
+
+    assert cov["papers_total"] == 3
+    assert cov["papers_missing_abstract"] == 2  # No Abstract + Resolved Missing Abs
+    assert cov["papers_missing_title"] == 0
+    assert cov["resolved_missing_abstract"] == 1
+    assert cov["resolved_missing_title"] == 0
+
+
+def test_backfill_falls_back_when_batch_throttled(monkeypatch):
+    """A throttled OpenAlex batch defers to the per-DOI chain (no crash)."""
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper Z", doi="10.9/z")  # abstract defaults to ""
+
+    def boom(dois, mailto, limiter):
+        raise RateLimitError("openalex batch throttled")
+
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", boom)
+    monkeypatch.setattr(
+        reference_store, "_fetch_abstract_crossref",
+        lambda doi, mailto, limiter: "Recovered abstract text.",
+    )
+
+    updated = backfill_abstracts(conn, source="crossref")
+
+    assert updated == 1
+    stored = conn.execute(
+        "SELECT abstract FROM papers WHERE id=?", (pid,)
+    ).fetchone()[0]
+    assert stored == "Recovered abstract text."
+
+
+
+def test_no_batch_skips_openalex_prepass(monkeypatch):
+    """--no-batch (use_batch=False): the OpenAlex batched pre-pass is skipped
+    entirely and a per-DOI Crossref fetch still fills the abstract.
+
+    Mirrors ``test_backfill_falls_back_when_batch_throttled`` but proves the
+    pre-pass is NOT even attempted when ``use_batch`` is False.
+    """
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper Z", doi="10.9/z")  # abstract defaults to ""
+
+    batch_calls = {"n": 0}
+
+    def boom(dois, mailto, limiter):
+        batch_calls["n"] += 1
+        raise AssertionError("OpenAlex batch pre-pass must NOT run when use_batch=False")
+
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", boom)
+    monkeypatch.setattr(
+        reference_store, "_fetch_abstract_crossref",
+        lambda doi, mailto, limiter: "Per-DOI abstract text.",
+    )
+
+    updated = backfill_abstracts(conn, source="crossref", use_batch=False)
+
+    assert batch_calls["n"] == 0  # pre-pass never invoked
+    assert updated == 1
+    stored = conn.execute(
+        "SELECT abstract FROM papers WHERE id=?", (pid,)
+    ).fetchone()[0]
+    assert stored == "Per-DOI abstract text."
+
+
+def test_stats_coverage_no_closed_db():
+    """snowball_coverage runs against a live in-memory connection and returns
+    the expected keys (guards the stats subcommand closed-db regression)."""
+    conn = _memory_db()
+    _insert_paper(conn, "Has Abstract", doi="10.1/a", authors="X")
+    conn.execute("UPDATE papers SET abstract = 'complete' WHERE doi = '10.1/a'")
+    _insert_paper(conn, "No Abstract", doi="10.2/b", authors="Y")
+    target = _insert_paper(conn, "Resolved Missing Abs", doi="10.3/c", authors="Z")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, "
+        "resolved_paper_id, status) VALUES (?, 'backward', '10.3/c', ?, 'resolved')",
+        (target, target),
+    )
+
+    cov = snowball_coverage(conn)
+
+    assert set(cov.keys()) == {
+        "papers_total", "papers_missing_abstract", "papers_missing_title",
+        "resolved_missing_abstract", "resolved_missing_title",
+    }
+    assert cov["papers_total"] == 3
+    assert cov["papers_missing_abstract"] == 2  # No Abstract + Resolved Missing Abs
+    assert cov["resolved_missing_abstract"] == 1
+    assert cov["papers_missing_title"] == 0
+    assert cov["resolved_missing_title"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TASK-014: Zotero-before-S2 ordering + batched Zotero lookup pre-passes
+# ---------------------------------------------------------------------------
+
+def test_chain_zotero_before_s2():
+    """Zotero now precedes Semantic Scholar in the fallback chains (faster,
+    rate-limit-immune local lookup before the slow S2 endpoint)."""
+    for source in ("crossref", "openalex"):
+        chain = reference_store._SOURCE_RATELIMIT_CHAIN[source]
+        assert chain.index("zotero") < chain.index("semantic_scholar")
+
+
+def test_zotero_batch_prepass_fills(monkeypatch):
+    """The Zotero batch pre-pass links DOIs from the local library with NO S2 call."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'semantic_scholar')", (seed,),
+    )
+
+    # Bulk Zotero lookup returns the cached work; S2 must NOT be contacted.
+    def fake_zotero_batch(dois):
+        return [{
+            "doi": "10.2/x", "title": "Paper X via Zotero", "authors": "Z. Zotero",
+            "year": 2021, "abstract": "Zotero cached abstract.",
+            "publication_title": "", "unstructured": "", "pdf_url": None,
+        }]
+
+    monkeypatch.setattr(zotero_sync, "lookup_doi_in_zotero_batch", fake_zotero_batch)
+
+    # If any external resolver were reached, the test would crash loudly.
+    def boom(*a, **k):
+        raise AssertionError("no external resolver should be contacted")
+    monkeypatch.setattr(reference_store, "_s2_get_work", boom)
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", boom)
+    monkeypatch.setattr(reference_store, "_crossref_resolve_dois", boom)
+
+    stats = resolve_reference_lists(conn, source="semantic_scholar", assured=False)
+
+    row = conn.execute(
+        "SELECT status, resolved_paper_id FROM reference_lists"
+    ).fetchone()
+    assert row["status"] == "resolved"
+    assert row["resolved_paper_id"] is not None
+    paper = conn.execute(
+        "SELECT title, doi FROM papers WHERE id=?", (row["resolved_paper_id"],)
+    ).fetchone()
+    assert paper["title"] == "Paper X via Zotero"
+    assert paper["doi"] == "10.2/x"
+    assert stats["aborted"] == 0
+
+
+def test_no_batch_disables_both_prepasses(monkeypatch):
+    """--no-batch: neither the OpenAlex nor the Zotero batch pre-pass runs, yet a
+    per-DOI resolve still fills the DOI."""
+    conn = _memory_db()
+    seed = _insert_paper(conn, "Seed A", doi="10.1/A")
+    conn.execute(
+        "INSERT INTO reference_lists (parent_paper_id, direction, ref_doi, source) "
+        "VALUES (?, 'backward', '10.2/X', 'openalex')", (seed,),
+    )
+
+    batch_calls = {"openalex": 0, "zotero": 0}
+
+    def boom_openalex(*a, **k):
+        batch_calls["openalex"] += 1
+        raise AssertionError("OpenAlex batch pre-pass must NOT run with --no-batch")
+
+    def boom_zotero(*a, **k):
+        batch_calls["zotero"] += 1
+        raise AssertionError("Zotero batch pre-pass must NOT run with --no-batch")
+
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", boom_openalex)
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", boom_zotero)
+
+    # per-DOI OpenAlex (first in chain) fills the DOI.
+    def fake_oa(dois, mailto, limiter):
+        return [{
+            "doi": "10.2/x", "title": "Paper X via OpenAlex", "authors": "Y. Z",
+            "year": 2019, "publication_title": "V", "pdf_url": None,
+        }], 1
+
+    monkeypatch.setattr(reference_store, "_openalex_resolve_dois", fake_oa)
+
+    stats = resolve_reference_lists(conn, source="openalex", use_batch=False, assured=False)
+
+    assert batch_calls["openalex"] == 0
+    assert batch_calls["zotero"] == 0
+    row = conn.execute("SELECT status FROM reference_lists").fetchone()
+    assert row["status"] == "resolved"
+    assert stats["new_papers"] == 1

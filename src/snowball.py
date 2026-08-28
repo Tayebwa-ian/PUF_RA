@@ -13,17 +13,15 @@ API and records every discovery with full provenance:
 All HTTP traffic goes through :class:`src.rate_limiter.RateLimiter`, which
 paces calls, honours ``Retry-After`` and backs off exponentially with jitter.
 
-Usage:
-    from src.snowball import run_snowball
-
-    with get_connection("results.db") as conn:
-        run_snowball(
-            conn,
-            seed_query_ids=[3, 4],
-            depth=1,
-            max_refs_per_paper=15,
-            max_api_calls=40,
-        )
+This module is the shared-helper layer for the snowball feature: it exposes the
+low-level HTTP client (:func:`_get_json`), the reference normalisation helpers
+(:func:`_normalise_reference`, :func:`normalise_doi`, :func:`normalise_title`),
+the Semantic Scholar backward client (:func:`s2_get_references`), the seed
+selection helper (:func:`_get_seed_papers`), the deduplication helper
+(:func:`find_existing_paper_id`) and the paper/source/edge persistence helpers
+(:func:`_ensure_source_snowball`, :func:`_find_or_create_paper`,
+:func:`_update_paper_if_needed`, :func:`_create_snowball_edge`). The single
+implementation of the snowball pipeline lives in :mod:`src.reference_store`.
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ import sqlite3
 import time
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from src.rate_limiter import RateLimiter, RateLimitError
@@ -42,11 +40,8 @@ from src.rate_limiter import RateLimiter, RateLimitError
 __all__ = [
     "RateLimiter",
     "RateLimitError",
-    "crossref_get_references",
     "find_existing_paper_id",
-    "run_snowball",
     "s2_get_references",
-    "s2_search_paper",
 ]
 
 
@@ -87,6 +82,7 @@ def _get_json(
     rate_limiter: Optional[RateLimiter] = None,
     retries: Optional[int] = None,
     timeout: float = REQUEST_TIMEOUT,
+    source: Optional[str] = None,
 ) -> dict[str, Any]:
     """GET *url* and parse the JSON response using smart rate limiting.
 
@@ -108,7 +104,7 @@ def _get_json(
     last_error: Optional[Exception] = None
 
     for attempt in range(attempts):
-        limiter.wait_before_call()
+        limiter.wait_before_call(source=source)
         try:
             request = Request(url, headers={"User-Agent": USER_AGENT})
             with urlopen(request, timeout=timeout) as response:
@@ -139,21 +135,6 @@ def _get_json(
 # Semantic Scholar client
 # ---------------------------------------------------------------------------
 
-def s2_search_paper(
-    title: str, rate_limiter: Optional[RateLimiter] = None
-) -> Optional[dict[str, Any]]:
-    """Search Semantic Scholar for a paper by title.
-
-    Returns the top result dict or None.
-    """
-    url = (
-        f"{S2_BASE}/paper/search?query={quote_plus(title)}"
-        f"&fields={S2_FIELDS}&limit=1"
-    )
-    data = _get_json(url, rate_limiter=rate_limiter)
-    papers = data.get("data") or []
-    top = papers[0] if papers else None
-    return top if isinstance(top, dict) else None
 
 
 def s2_get_references(
@@ -173,7 +154,7 @@ def s2_get_references(
         f"{S2_BASE}/paper/{quote(paper_id, safe=':/')}/references"
         f"?fields={S2_FIELDS}&limit={limit}"
     )
-    data = _get_json(url, rate_limiter=rate_limiter)
+    data = _get_json(url, rate_limiter=rate_limiter, source="semantic_scholar")
     references = []
     for entry in data.get("data") or []:
         if not isinstance(entry, dict):
@@ -188,24 +169,6 @@ def s2_get_references(
 # Crossref client
 # ---------------------------------------------------------------------------
 
-def crossref_get_references(
-    doi: str, limit: int = 20, rate_limiter: Optional[RateLimiter] = None
-) -> list[dict[str, Any]]:
-    """Fetch references from Crossref for a paper DOI.
-
-    Args:
-        doi: Paper DOI.
-        limit: Maximum number of references to return.
-        rate_limiter: Shared limiter for pacing/backoff.
-
-    Returns:
-        List of reference dicts with 'DOI', 'title', 'author', etc.
-    """
-    url = f"{CROSSREF_BASE}/{quote(doi, safe='/')}"
-    data = _get_json(url, rate_limiter=rate_limiter)
-    message = data.get("message") or {}
-    refs = [entry for entry in (message.get("reference") or []) if isinstance(entry, dict)]
-    return refs[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -519,257 +482,3 @@ def _get_seed_papers(conn: sqlite3.Connection, query_ids: list[int]) -> list[int
     return [row[0] for row in rows]
 
 
-def _all_paper_ids(conn: sqlite3.Connection) -> list[int]:
-    """Return every paper id in the corpus, ordered by id."""
-    return [row[0] for row in conn.execute("SELECT id FROM papers ORDER BY id")]
-
-
-def _resolve_seeds(
-    conn: sqlite3.Connection,
-    seed_paper_ids: Optional[list[int]],
-    seed_query_ids: Optional[list[int]],
-) -> list[int]:
-    """Pick the seed set: explicit paper ids > query ids > whole corpus."""
-    if seed_paper_ids:
-        return list(dict.fromkeys(int(pid) for pid in seed_paper_ids))
-    if seed_query_ids:
-        return _get_seed_papers(conn, list(seed_query_ids))
-    return _all_paper_ids(conn)
-
-
-def _fetch_references(
-    title: str,
-    doi: Optional[str],
-    source: str,
-    max_refs: int,
-    limiter: RateLimiter,
-    budget: Optional[int],
-) -> tuple[list[dict[str, Any]], int]:
-    """Fetch the reference list of one paper.
-
-    Returns ``(references, api_calls_used)``. A DOI is used directly as the
-    Semantic Scholar identifier so the extra title search is only needed for
-    papers without a usable DOI.
-    """
-    used = 0
-
-    def _budget_left() -> bool:
-        return budget is None or (budget - used) > 0
-
-    if source == "crossref":
-        if not doi or not _budget_left():
-            return [], used
-        used += 1
-        return crossref_get_references(doi, limit=max_refs, rate_limiter=limiter), used
-
-    if doi:
-        if not _budget_left():
-            return [], used
-        used += 1
-        try:
-            return (
-                s2_get_references(f"DOI:{doi}", limit=max_refs, rate_limiter=limiter),
-                used,
-            )
-        except HTTPError as exc:
-            if exc.code != 404:
-                raise
-
-    if not title or not _budget_left():
-        return [], used
-    used += 1
-    match = s2_search_paper(title, rate_limiter=limiter)
-    s2_id = None
-    if match:
-        s2_id = match.get("paperId") or (match.get("externalIds") or {}).get("CorpusId")
-    if not s2_id or not _budget_left():
-        return [], used
-    used += 1
-    return s2_get_references(str(s2_id), limit=max_refs, rate_limiter=limiter), used
-
-
-def run_snowball(
-    conn: sqlite3.Connection,
-    seed_query_ids: Optional[list[int]] = None,
-    depth: int = 1,
-    max_refs_per_paper: int = 20,
-    source: str = "semantic_scholar",
-    delay: float = 1.0,
-    auto_relevance: bool = True,
-    auto_screen: bool = False,
-    screening_client: Optional[Any] = None,
-    screening_model: Optional[str] = None,
-    screening_prompt: Optional[str] = None,
-    seed_paper_ids: Optional[list[int]] = None,
-    max_api_calls: Optional[int] = None,
-    rate_limiter: Optional[RateLimiter] = None,
-    skip_expanded: bool = True,
-) -> dict[str, int]:
-    """Run a backward snowball search and persist the discoveries.
-
-    Args:
-        conn: SQLite connection.
-        seed_query_ids: Seed from every paper linked to these queries.
-        depth: Maximum snowball depth (1 = direct references only).
-        max_refs_per_paper: Maximum references to fetch per paper.
-        source: API source ('semantic_scholar' or 'crossref').
-        delay: Minimum spacing between API calls, in seconds.
-        auto_relevance: Run relevance evaluation when new papers were added.
-        auto_screen: Run LLM screening on the updated corpus.
-        screening_client: OpenAI-compatible client for LLM screening.
-        screening_model: Model name for LLM screening.
-        screening_prompt: System prompt for LLM screening.
-        seed_paper_ids: Explicit seed paper ids (highest precedence).
-        max_api_calls: Stop after this many API requests (politeness budget).
-        rate_limiter: Pre-configured limiter; one is built from *delay* if None.
-        skip_expanded: Skip seeds that already have snowball edges, so a
-            budget-limited run resumes where the previous one stopped.
-
-    Returns:
-        Stats dict with 'seeds', 'skipped', 'processed', 'discovered', 'new',
-        'linked', 'edges', 'api_calls' and 'aborted'.
-    """
-    source_id = _ensure_source_snowball(conn)
-    limiter = rate_limiter if rate_limiter is not None else RateLimiter(min_interval=delay)
-    seeds = _resolve_seeds(conn, seed_paper_ids, seed_query_ids)
-
-    if skip_expanded:
-        expanded = {
-            row[0]
-            for row in conn.execute("SELECT DISTINCT parent_paper_id FROM snowball_edges")
-        }
-        pending = [paper_id for paper_id in seeds if paper_id not in expanded]
-    else:
-        expanded = set()
-        pending = list(seeds)
-
-    stats = {
-        "seeds": len(seeds),
-        "skipped": len(seeds) - len(pending),
-        "processed": 0,
-        "discovered": 0,
-        "new": 0,
-        "linked": 0,
-        "edges": 0,
-        "api_calls": 0,
-        "aborted": 0,
-    }
-
-    if not pending:
-        print("No seed papers to expand; nothing to snowball.")
-        return stats
-
-    print(
-        f"Found {len(seeds)} seed papers "
-        f"({stats['skipped']} already expanded). Starting snowball search..."
-    )
-
-    processed: set[int] = set()
-    frontier = pending
-    stop = False
-
-    for current_depth in range(1, depth + 1):
-        if stop or not frontier:
-            break
-        next_frontier: list[int] = []
-
-        for parent_id in frontier:
-            if parent_id in processed:
-                continue
-            if max_api_calls is not None and stats["api_calls"] >= max_api_calls:
-                print(f"API call budget reached ({max_api_calls}); stopping.")
-                stop = True
-                break
-            processed.add(parent_id)
-
-            paper_row = conn.execute(
-                "SELECT title, doi FROM papers WHERE id = ?", (parent_id,)
-            ).fetchone()
-            if not paper_row:
-                continue
-            title, doi = paper_row[0], paper_row[1]
-
-            budget = None if max_api_calls is None else max_api_calls - stats["api_calls"]
-            used = 0
-            try:
-                refs, used = _fetch_references(
-                    title, doi, source, max_refs_per_paper, limiter, budget
-                )
-            except RateLimitError as exc:
-                stats["api_calls"] += used
-                print(f"Stopping: API unavailable for paper {parent_id}: {exc}")
-                stats["aborted"] = 1
-                stop = True
-                break
-            except HTTPError as exc:
-                stats["api_calls"] += used
-                print(f"  HTTP error for paper {parent_id}: {exc}")
-                continue
-            except (URLError, OSError, ValueError, TypeError, KeyError) as exc:
-                stats["api_calls"] += used
-                print(f"  Error fetching refs for paper {parent_id}: {exc!r}")
-                continue
-            except Exception as exc:
-                stats["api_calls"] += used
-                print(f"Stopping: unexpected error for paper {parent_id}: {exc!r}")
-                stats["aborted"] = 1
-                stop = True
-                break
-
-            stats["api_calls"] += used
-            stats["processed"] += 1
-            stats["discovered"] += len(refs)
-
-            for ref in refs:
-                normed = _normalise_reference(ref)
-                if not normed:
-                    continue
-                try:
-                    known_id = find_existing_paper_id(
-                        conn, normed.get("doi"), normed.get("title")
-                    )
-                    child_id = _find_or_create_paper(conn, normed, source_id)
-                except sqlite3.Error as exc:
-                    print(f"  Error processing ref for paper {parent_id}: {exc}")
-                    continue
-
-                if known_id is None:
-                    stats["new"] += 1
-                else:
-                    stats["linked"] += 1
-                if _create_snowball_edge(conn, child_id, parent_id, current_depth):
-                    stats["edges"] += 1
-                if child_id not in processed:
-                    next_frontier.append(child_id)
-
-            conn.commit()
-
-        frontier = next_frontier
-
-    conn.commit()
-
-    if auto_relevance and stats["new"] > 0:
-        from src.relevance import evaluate_corpus
-
-        print("Running relevance evaluation on updated corpus...")
-        evaluate_corpus(conn, store=True)
-        conn.commit()
-    elif auto_relevance:
-        print("No new papers; skipping relevance evaluation.")
-
-    if auto_screen and screening_client and stats["new"] > 0:
-        from src.screening import run_screening
-
-        print("Running LLM screening on updated corpus...")
-        run_screening(
-            conn,
-            client=screening_client,
-            model=screening_model or "",
-            system_prompt=screening_prompt or "",
-            query_ids=seed_query_ids or [],
-            dry_run=False,
-        )
-        conn.commit()
-
-    print(f"Snowball complete: {stats}")
-    return stats

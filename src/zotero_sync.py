@@ -14,6 +14,9 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import re
+
 from typing import Any, Optional
 
 try:  # pragma: no cover - optional dependency
@@ -101,9 +104,9 @@ def push_dois_to_zotero(
         return 0
 
     if zotero is None:
-        library_id = __import__("os").environ.get("ZOTERO_LIBRARY_ID")
-        library_type = __import__("os").environ.get("ZOTERO_LIBRARY_TYPE", "user")
-        api_key = __import__("os").environ.get("ZOTERO_API_KEY")
+        library_id = os.environ.get("ZOTERO_LIBRARY_ID")
+        library_type = os.environ.get("ZOTERO_LIBRARY_TYPE", "user")
+        api_key = os.environ.get("ZOTERO_API_KEY")
         if not (library_id and api_key):
             print(
                 "Zotero is not configured (set ZOTERO_LIBRARY_ID, "
@@ -141,3 +144,198 @@ def push_dois_to_zotero(
 
     print(f"Pushed {pushed} DOIs to Zotero collection '{collection_name}'.")
     return pushed
+
+
+def _normalise_zotero_item(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Build a ``{doi,title,authors,year,abstract}`` dict from a Zotero item.
+
+    ``creators`` are rendered as "Given Family" and joined with "; "; the year
+    is parsed from the ``date`` field; ``abstractNote`` becomes ``abstract``.
+    Returns ``None`` when *data* is unusable.
+    """
+    if not isinstance(data, dict):
+        return None
+    title = data.get("title") or ""
+    creators = data.get("creators") or []
+    authors = "; ".join(
+        f"{c.get('given', '').strip()} {c.get('family', '').strip()}".strip()
+        for c in creators
+        if isinstance(c, dict)
+    )
+    year = None
+    date = data.get("date") or ""
+    match = re.search(r"\d{4}", str(date))
+    if match:
+        try:
+            year = int(match.group(0))
+        except ValueError:
+            year = None
+    abstract = data.get("abstractNote") or ""
+    return {
+        "doi": data.get("DOI"),
+        "title": title,
+        "authors": authors,
+        "year": year,
+        "abstract": abstract,
+        "publication_title": data.get("publicationTitle") or "",
+    }
+
+
+def _build_zotero_client() -> Any:
+    """Construct a Zotero client from the environment, or return None.
+
+    Never raises: if ``pyzotero`` is missing or the ``ZOTERO_*`` env vars are
+    unset, ``None`` is returned so the caller can treat Zotero as unavailable.
+    """
+    if Zotero is None:
+        return None
+    library_id = os.environ.get("ZOTERO_LIBRARY_ID")
+    library_type = os.environ.get("ZOTERO_LIBRARY_TYPE", "user")
+    api_key = os.environ.get("ZOTERO_API_KEY")
+    if not (library_id and api_key):
+        return None
+    try:
+        return Zotero(library_id, library_type, api_key)
+    except Exception:  # noqa: BLE001 - Zotero init can raise anything
+        return None
+
+
+def lookup_doi_in_zotero(
+    doi: str, zotero: Any = None, qmode: str = "everything"
+) -> Optional[dict[str, Any]]:
+    """Look up a single DOI in the user's local Zotero library.
+
+    Queries the user's Zotero library via ``zotero.items(query=doi)`` with
+    ``qmode="everything"`` and returns a normalised dict
+    ``{doi, title, authors, year, abstract}`` for the item whose DOI matches
+    *doi*. Returns ``None`` when Zotero is not configured, ``pyzotero`` is
+    missing, no item matches, or the lookup fails for any reason. Never raises.
+    """
+    if zotero is None:
+        zotero = _build_zotero_client()
+    if zotero is None:
+        return None
+
+    from src.snowball import normalise_doi
+
+    try:
+        items = zotero.items(query=doi, qmode=qmode)
+    except Exception:  # noqa: BLE001 - the Zotero API can raise anything
+        return None
+
+    norm_doi = normalise_doi(doi)
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
+        item_doi = normalise_doi(data.get("DOI"))
+        if norm_doi and item_doi and item_doi != norm_doi:
+            continue
+        return _normalise_zotero_item(data)
+    return None
+
+
+def build_library_doi_index(zotero: Any = None) -> dict[str, dict[str, Any]]:
+    """Fetch the user's entire Zotero library ONCE and build a DOI->metadata index.
+
+    Returns ``{normalised_doi: {title, authors, year, abstract, publication_title}}``.
+    Returns ``{}`` when ``pyzotero`` is unavailable or ``ZOTERO_LIBRARY_ID`` /
+    ``ZOTERO_API_KEY`` are unset. Never raises: a network/API failure yields an empty
+    index so the caller falls back to the per-DOI chain. The index is built from a
+    single local library read, so it is instant and rate-limit immune.
+    """
+    if zotero is None:
+        zotero = _build_zotero_client()
+    if zotero is None:
+        return {}
+    try:
+        from src.snowball import normalise_doi
+        items = zotero.everything(zotero.items())
+    except Exception:  # noqa: BLE001 - the Zotero API can raise anything
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
+        doi = normalise_doi(data.get("DOI"))
+        if not doi:
+            continue
+        meta = _normalise_zotero_item(data)
+        if meta is None:
+            continue
+        index[doi] = {
+            "title": meta.get("title", ""),
+            "authors": meta.get("authors", ""),
+            "year": meta.get("year"),
+            "abstract": meta.get("abstract", ""),
+            "publication_title": meta.get("publication_title", ""),
+        }
+    return index
+
+
+def lookup_doi_in_zotero_batch(
+    dois: list[str], zotero: Any = None, qmode: str = "everything"
+) -> list[dict[str, Any]]:
+    """Resolve many DOIs against the local Zotero library in a single library fetch.
+
+    Builds the in-memory DOI index via :func:`build_library_doi_index` (one local
+    read of the whole library) and returns a list of normalised work dicts (same
+    shape as :func:`lookup_doi_in_zotero`: doi/title/authors/year/abstract/
+    publication_title/unstructured/pdf_url) for every supplied DOI present in the
+    library. If the index cannot be built, falls back to calling
+    :func:`lookup_doi_in_zotero` per DOI (still a local, instant read). Never raises.
+    """
+    from src.snowball import normalise_doi
+
+    index = build_library_doi_index(zotero=zotero)
+    if not index:
+        # Fall back to per-DOI lookups (local, instant) when the bulk fetch fails.
+        out: list[dict[str, Any]] = []
+        for doi in dois:
+            meta = lookup_doi_in_zotero(doi, zotero=zotero, qmode=qmode)
+            if meta:
+                out.append(meta)
+        return out
+    out: list[dict[str, Any]] = []
+    for doi in dois:
+        nd = normalise_doi(doi)
+        if not nd:
+            continue
+        meta = index.get(nd)
+        if not meta:
+            continue
+        out.append(
+            {
+                "doi": nd,
+                "title": meta.get("title", ""),
+                "authors": meta.get("authors", ""),
+                "year": meta.get("year"),
+                "abstract": meta.get("abstract", ""),
+                "publication_title": meta.get("publication_title", ""),
+                "unstructured": "",
+                "pdf_url": None,
+            }
+        )
+    return out
+
+
+def fetch_abstract_via_zotero(
+    doi: str, mailto: Optional[str] = None, limiter: Any = None, zotero: Any = None
+) -> Optional[str]:
+    """Return the abstract (``abstractNote``) for *doi* from Zotero, or None.
+
+    *mailto* and *limiter* are accepted for call-compatibility with the other
+    abstract fetchers but are unused (Zotero is a local read, not a rate-limited
+    API). Returns ``None`` when Zotero is unavailable or the DOI is not found.
+    Never raises.
+    """
+    item = lookup_doi_in_zotero(doi, zotero=zotero)
+    if not item:
+        return None
+    abstract = item.get("abstract")
+    return abstract if abstract else None

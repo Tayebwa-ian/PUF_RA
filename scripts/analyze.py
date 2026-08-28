@@ -1,4 +1,4 @@
-"""Standalone runner for ``puf analyze`` (mirrors scripts/run_snowball.py).
+"""Standalone runner for ``puf analyze`` (mirrors the ``puf analyze`` CLI in cli/analyze.py).
 
     python -m scripts.analyze all --db results.db --out-dir data/analysis
     python -m scripts.analyze relevance --mode direct

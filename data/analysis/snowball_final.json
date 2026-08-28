@@ -1,0 +1,24 @@
+{
+  "snowball_status": {
+    "status_counts": [
+      {
+        "status": "resolved",
+        "n": 2895
+      },
+      {
+        "status": "unresolved_no_doi",
+        "n": 1405
+      },
+      {
+        "status": "unresolved_title_failed",
+        "n": 58
+      },
+      {
+        "status": "fetch_error",
+        "n": 24
+      }
+    ],
+    "edges": 2890,
+    "papers_discovered_via_snowball": 2809
+  }
+}

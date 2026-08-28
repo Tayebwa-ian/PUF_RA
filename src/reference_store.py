@@ -25,7 +25,7 @@ from typing import Any, Iterable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 
-from src.rate_limiter import RateLimiter, RateLimitError
+from src.rate_limiter import RateLimiter, RateLimitError, DEFAULT_SOURCE_INTERVALS
 from src.snowball import (
     CROSSREF_BASE,
     S2_BASE,
@@ -41,6 +41,8 @@ from src.snowball import (
     s2_get_references,
 )
 
+from src import zotero_sync
+
 #: OpenAlex base URL
 OPENALEX_BASE = "https://api.openalex.org/works"
 #: Default pacing interval (seconds) when no limiter is supplied
@@ -53,6 +55,20 @@ _ALTERNATE_SOURCE = {
     "crossref": "openalex",
     "openalex": "crossref",
     "semantic_scholar": None,
+}
+
+#: Fallback chain tried when a source is rate-limited (HTTP 429). The batch keeps
+#: going by switching to the next platform instead of aborting; the order is chosen
+#: to maximise API utilisation (e.g. a throttled S2 spills onto OpenAlex/Crossref).
+#: ``--no-alternate`` ignores this chain entirely (strict single-source). The local,
+#: rate-limit-immune Zotero library is preferred BEFORE the slow/limited Semantic
+#: Scholar (S2) endpoint, so a cached paper resolves instantly instead of waiting on
+#: S2; Crossref/OpenAlex remain the fast primary resolvers.
+_SOURCE_RATELIMIT_CHAIN = {
+    "crossref": ["crossref", "openalex", "zotero", "semantic_scholar"],
+    "openalex": ["openalex", "crossref", "zotero", "semantic_scholar"],
+    "semantic_scholar": ["semantic_scholar", "openalex", "crossref", "zotero"],
+    "zotero": ["zotero"],
 }
 
 #: Run statistics: integer counters plus the nested ``status_counts`` mapping
@@ -92,7 +108,7 @@ def _openalex_filter(
     url = f"{OPENALEX_BASE}?filter={quote(filter_value)}&per-page=200"
     if mailto:
         url += f"&mailto={quote(mailto)}"
-    data = _get_json(url, rate_limiter=limiter)
+    data = _get_json(url, rate_limiter=limiter, source="openalex")
     return data.get("results") or [], 1
 
 
@@ -143,6 +159,75 @@ def _openalex_resolve_dois(
     return out, used
 
 
+def _openalex_batch_by_dois(
+    dois: list[str], mailto: Optional[str], limiter: RateLimiter,
+    chunk_size: int = 50, source: str = "openalex",
+) -> tuple[list[dict[str, Any]], int]:
+    """Batch-resolve many DOIs via one OpenAlex ``filter=doi:`` call per chunk.
+
+    Normalises each returned work into the SAME dict shape the per-DOI resolvers
+    return (``doi``/``title``/``authors``/``year``/``abstract``/``publication_title``
+    /``pdf_url``). Paced via ``source='openalex'``. Returns ``(works, total_api_calls)``.
+    A ``RateLimitError`` from a chunk propagates to the caller (which falls back to
+    the per-DOI chain); other per-chunk errors are swallowed so one bad chunk never
+    aborts the whole batch.
+    """
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for d in dois:
+        nd = normalise_doi(d)
+        if nd and nd not in seen:
+            seen.add(nd)
+            normalised.append(nd)
+    if not normalised:
+        return [], 0
+    works: list[dict[str, Any]] = []
+    used = 0
+    for chunk in _chunk(normalised, chunk_size):
+        batch, calls = _openalex_filter(
+            f"doi:{'|'.join(chunk)}", mailto, limiter
+        )
+        used += calls
+        for w in batch:
+            works.append(_normalise_openalex_work(w))
+    return works, used
+
+
+def _zotero_batch_by_dois(
+    dois: list[str], mailto: Optional[str], limiter: RateLimiter,
+    chunk_size: int = 50, source: str = "zotero",
+) -> tuple[list[dict[str, Any]], int]:
+    """Batch-resolve many DOIs against the local Zotero library in one library fetch.
+
+    Mirrors :func:`_openalex_batch_by_dois`: builds the in-memory DOI index once (a
+    single local library read via :func:`src.zotero_sync.lookup_doi_in_zotero_batch`)
+    and returns normalised works for every supplied DOI present in the library. A
+    local read is never throttled and is not a rate-limited API, so it is counted as
+    ``api_calls=0``. Any error is swallowed (returning ``([], 0)``) so the caller
+    falls back to the per-DOI chain; the function never raises ``RateLimitError``.
+    """
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for d in dois:
+        nd = normalise_doi(d)
+        if nd and nd not in seen:
+            seen.add(nd)
+            normalised.append(nd)
+    if not normalised:
+        return [], 0
+    try:
+        works = zotero_sync.lookup_doi_in_zotero_batch(normalised)
+    except Exception:
+        return [], 0
+    by_nd = {normalise_doi(w.get("doi")): w for w in works if w.get("doi")}
+    out: list[dict[str, Any]] = []
+    for nd in normalised:
+        work = by_nd.get(nd)
+        if work is not None:
+            out.append(work)
+    return out, 0
+
+
 def _crossref_resolve_dois(
     dois: list[str], mailto: Optional[str], limiter: RateLimiter
 ) -> tuple[list[dict[str, Any]], int]:
@@ -161,7 +246,7 @@ def _crossref_resolve_dois(
         if mailto:
             url += f"?mailto={quote(mailto)}"
         try:
-            data = _get_json(url, rate_limiter=limiter)
+            data = _get_json(url, rate_limiter=limiter, source="crossref")
         except HTTPError:
             continue
         used += 1
@@ -348,7 +433,7 @@ def _fetch_abstract_crossref(
     if mailto:
         url += f"?mailto={quote(mailto)}"
     try:
-        data = _get_json(url, rate_limiter=limiter)
+        data = _get_json(url, rate_limiter=limiter, source="crossref")
     except (HTTPError, URLError, OSError, ValueError):
         return None
     item = data.get("message") or {}
@@ -388,7 +473,7 @@ def _fetch_abstract_s2(
         return None
     url = f"{S2_BASE}/paper/DOI:{quote(nd, safe='/')}?fields={S2_FIELDS}"
     try:
-        data = _get_json(url, rate_limiter=limiter)
+        data = _get_json(url, rate_limiter=limiter, source="semantic_scholar")
     except (HTTPError, URLError, OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -410,7 +495,7 @@ def _s2_get_work(
         return None
     url = f"{S2_BASE}/paper/DOI:{quote(nd, safe='/')}?fields={S2_FIELDS}"
     try:
-        data = _get_json(url, rate_limiter=limiter)
+        data = _get_json(url, rate_limiter=limiter, source="semantic_scholar")
     except (HTTPError, URLError, OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -475,7 +560,7 @@ def _fetch_seed_reference_list(
         url = f"{CROSSREF_BASE}/{quote(seed_doi, safe='/')}"
         if mailto:
             url += f"?mailto={quote(mailto)}"
-        data = _get_json(url, rate_limiter=limiter)
+        data = _get_json(url, rate_limiter=limiter, source="crossref")
         refs = data.get("message", {}).get("reference") or []
         return [_normalise_crossref_reference(r) for r in refs if isinstance(r, dict)], 1
 
@@ -641,7 +726,98 @@ def _resolve_dois_via_source(
         return _openalex_resolve_dois(list(dois), mailto, limiter)
     if source == "semantic_scholar":
         return _s2_resolve_dois(list(dois), mailto, limiter)
+    if source == "zotero":
+        return _resolve_dois_via_zotero(list(dois), mailto, limiter)
     return _crossref_resolve_dois(list(dois), mailto, limiter)
+
+
+def _resolve_dois_via_zotero(
+    dois: list[str], mailto: Optional[str], limiter: RateLimiter
+) -> tuple[list[dict[str, Any]], int]:
+    """Resolve DOIs from the local Zotero library (rate-limit immune).
+
+    Reads the user's Zotero library for each DOI via
+    :func:`src.zotero_sync.lookup_doi_in_zotero`. Returns the same dict shape as
+    the other resolvers (``doi``/``title``/``authors``/``year``/``abstract``/...).
+    Never raises :class:`src.rate_limiter.RateLimitError` -- a local read cannot
+    be throttled by an external API, and an unconfigured Zotero simply yields no
+    matches.
+    """
+    out: list[dict[str, Any]] = []
+    used = 0
+    for doi in dois:
+        if not doi:
+            continue
+        meta = zotero_sync.lookup_doi_in_zotero(doi)
+        if not meta:
+            continue
+        used += 1
+        out.append(
+            {
+                "doi": meta.get("doi"),
+                "title": meta.get("title") or "",
+                "authors": meta.get("authors") or "",
+                "year": meta.get("year"),
+                "unstructured": "",
+                "publication_title": "",
+                "pdf_url": None,
+                "abstract": meta.get("abstract") or "",
+            }
+        )
+    return out, used
+
+
+def _resolve_dois_with_fallback(
+    dois: list[str], source: str, no_alternate: bool, mailto: Optional[str],
+    limiter: RateLimiter, throttled: set[str], stats: StatsDict, api_calls: int,
+    max_api_calls: Optional[int],
+) -> tuple[dict[str, Any], int]:
+    """Resolve *dois* via *source*, switching to the next source in
+    :data:`_SOURCE_RATELIMIT_CHAIN` when the current one raises ``RateLimitError``.
+
+    Never raises ``RateLimitError`` to the caller (returns ``{}`` if every candidate
+    source is throttled or the budget is exhausted). Mutates *throttled* (a set of
+    source names rate-limited during this batch). For DOIs a source returns but does
+    NOT contain (404/not-found), the existing :data:`_ALTERNATE_SOURCE` 404 fallback
+    is applied (unless *no_alternate*). Returns ``(by_doi, api_calls)`` where *by_doi*
+    maps ``normalise_doi`` -> metadata dict.
+    """
+    if not dois:
+        return {}, api_calls
+    order = [source] if no_alternate else _SOURCE_RATELIMIT_CHAIN.get(source, [source])
+    for src in order:
+        if src in throttled:
+            continue
+        if max_api_calls is not None and api_calls >= max_api_calls:
+            break
+        to_query = list(dois)
+        if max_api_calls is not None:
+            to_query = to_query[: max_api_calls - api_calls]
+        try:
+            resolved, used = _resolve_dois_via_source(to_query, src, mailto, limiter)
+        except RateLimitError:
+            throttled.add(src)
+            continue
+        api_calls += used
+        stats["api_calls"] = api_calls
+        by_doi = {normalise_doi(r.get("doi")): r for r in resolved}
+        missing = [d for d in to_query if d not in by_doi]
+        alt = None if no_alternate else _ALTERNATE_SOURCE.get(src)
+        if missing and alt is not None:
+            try:
+                alt_resolved, used2 = _resolve_dois_via_source(missing, alt, mailto, limiter)
+            except RateLimitError:
+                throttled.add(alt)
+                alt_resolved = []
+                used2 = 0
+            api_calls += used2
+            stats["api_calls"] = api_calls
+            for r in alt_resolved:
+                nd = normalise_doi(r.get("doi"))
+                if nd in missing:
+                    by_doi.setdefault(nd, r)
+        return by_doi, api_calls  # first non-throttled source wins; 404-alternate applied
+    return {}, api_calls  # all candidates throttled / budget gone
 
 
 def _batch_resolve_references(
@@ -654,6 +830,7 @@ def _batch_resolve_references(
     api_calls: int,
     stats: StatsDict,
     no_alternate: bool = False,
+    use_batch: bool = True,
 ) -> int:
     """Resolve a batch of unresolved references that carry a DOI.
 
@@ -679,7 +856,73 @@ def _batch_resolve_references(
         if nd not in order:
             order.append(nd)
 
-    alternate = None if no_alternate else _ALTERNATE_SOURCE.get(source)
+    # Fast primary path: batched OpenAlex multi-DOI lookup resolves most DOIs in
+    # ~1 call per 50 DOIs. Strictly additive: on any error it defers to the
+    # existing per-DOI chain below (which also falls back across sources).
+    resolved_via_batch: set[str] = set()
+    # The batched OpenAlex pre-pass is active for the OpenAlex resolve source.
+    # For Crossref/semantic_scholar resolve we deliberately do NOT pre-empt the
+    # existing per-DOI chain (Crossref stays per-DOI polite; S2 is standalone),
+    # so their api_calls accounting and cross-source semantics are unchanged.
+    if use_batch and not no_alternate and source == "openalex":
+        try:
+            batch_works, used = _openalex_batch_by_dois(list(order), mailto, limiter)
+            api_calls += used
+            stats["api_calls"] = api_calls
+            by_nd = {normalise_doi(w.get("doi")): w for w in batch_works}
+            for nd in order:
+                work = by_nd.get(nd)
+                if work is None:
+                    continue
+                paper_id, is_new = _find_or_create_ref_paper(
+                    conn, work, source_id, work.get("pdf_url")
+                )
+                if is_new:
+                    stats["new_papers"] += 1
+                for row in groups[nd]:
+                    conn.execute(
+                        "UPDATE reference_lists SET resolved_paper_id = ?, "
+                        "status = 'resolved' WHERE id = ?",
+                        (paper_id, row["id"]),
+                    )
+                    if _create_snowball_edge(conn, paper_id, row["parent_paper_id"], 1):
+                        stats["edges"] += 1
+                resolved_via_batch.add(nd)
+            conn.commit()
+        except Exception:
+            pass
+
+    # Fast local pre-pass: the local Zotero library (rate-limit immune, instant)
+    # resolves DOIs before any slow/rate-limited external API (notably S2). Strictly
+    # additive: on any error it defers to the existing per-DOI chain below (which
+    # still falls back across sources). Never raises RateLimitError.
+    if use_batch and not no_alternate:
+        try:
+            zotero_works, _ = _zotero_batch_by_dois(list(order), mailto, limiter)
+            by_znd = {normalise_doi(w.get("doi")): w for w in zotero_works}
+            for nd in order:
+                work = by_znd.get(nd)
+                if work is None:
+                    continue
+                paper_id, is_new = _find_or_create_ref_paper(
+                    conn, work, source_id, work.get("pdf_url")
+                )
+                if is_new:
+                    stats["new_papers"] += 1
+                for row in groups[nd]:
+                    conn.execute(
+                        "UPDATE reference_lists SET resolved_paper_id = ?, "
+                        "status = 'resolved' WHERE id = ?",
+                        (paper_id, row["id"]),
+                    )
+                    if _create_snowball_edge(conn, paper_id, row["parent_paper_id"], 1):
+                        stats["edges"] += 1
+                resolved_via_batch.add(nd)
+            conn.commit()
+        except Exception:
+            pass
+
+    throttled: set[str] = set()
 
     for chunk in _chunk(order, 50):
         if max_api_calls is not None and api_calls >= max_api_calls:
@@ -688,24 +931,17 @@ def _batch_resolve_references(
         remaining = None if max_api_calls is None else max_api_calls - api_calls
         if remaining is not None and remaining <= 0:
             break
-        primary_chunk = list(chunk)[:remaining] if remaining is not None else list(chunk)
+        chunk_remaining = [d for d in chunk if d not in resolved_via_batch]
+        primary_chunk = (
+            chunk_remaining[:remaining] if remaining is not None else chunk_remaining
+        )
 
-        resolved, used = _resolve_dois_via_source(primary_chunk, source, mailto, limiter)
-        api_calls += used
-        stats["api_calls"] = api_calls
+        by_doi, api_calls = _resolve_dois_with_fallback(
+            primary_chunk, source, no_alternate, mailto, limiter,
+            throttled, stats, api_calls, max_api_calls,
+        )
 
-        by_doi = {normalise_doi(r.get("doi")): r for r in resolved}
-        missing = [d for d in primary_chunk if d not in by_doi]
-        if missing and remaining is not None:
-            missing = missing[:remaining]
-        if missing and alternate is not None:
-            alt_resolved, used2 = _resolve_dois_via_source(missing, alternate, mailto, limiter)
-            api_calls += used2
-            stats["api_calls"] = api_calls
-            for r in alt_resolved:
-                by_doi.setdefault(normalise_doi(r.get("doi")), r)
-
-        for doi in chunk:
+        for doi in chunk_remaining:
             meta = by_doi.get(doi)
             if meta is None:
                 for row in groups[doi]:
@@ -762,7 +998,7 @@ def _openalex_title_search(
     if mailto:
         url += f"&mailto={quote(mailto)}"
     try:
-        data = _get_json(url, rate_limiter=limiter)
+        data = _get_json(url, rate_limiter=limiter, source="openalex")
     except (HTTPError, URLError, OSError, ValueError):
         return [], 1
     return [_normalise_openalex_work(w) for w in (data.get("results") or [])], 1
@@ -780,7 +1016,7 @@ def _crossref_title_search(
     if mailto:
         url += f"&mailto={quote(mailto)}"
     try:
-        data = _get_json(url, rate_limiter=limiter)
+        data = _get_json(url, rate_limiter=limiter, source="crossref")
     except (HTTPError, URLError, OSError, ValueError):
         return [], 1
     items = data.get("message", {}).get("items") or []
@@ -814,27 +1050,31 @@ def _resolve_by_title(
     """Resolve a DOI-less reference by title + year via OpenAlex then Crossref.
 
     Conservative: only accept a candidate whose normalised title is EQUAL and
-    whose publication year is within +/-1 of the reference year. Returns
-    ``(normalised reference dict or None, api_calls_used)``.
+    whose publication year is within +/-1 of the reference year. When a source is
+    rate-limited (HTTP 429) the other platform is tried instead of aborting the
+    batch; a single ``primary`` source is tried alone (a 429 there yields no match,
+    not an abort). Returns ``(normalised reference dict or None, api_calls_used)``.
     """
     title = (ref.get("ref_title") or ref.get("title") or "").strip()
     if not title:
         return None, 0
     year = ref.get("ref_year")
     norm_title = normalise_title(title)
-    if primary == "crossref":
-        works, used = _crossref_title_search(title, mailto, limiter)
-        return _best_title_match(works, norm_title, year), used
-    if primary == "openalex":
-        works, used = _openalex_title_search(norm_title, mailto, limiter)
-        return _best_title_match(works, norm_title, year), used
-    # default (no single-source restriction): try both, OpenAlex first
-    works, used = _openalex_title_search(norm_title, mailto, limiter)
-    match = _best_title_match(works, norm_title, year)
-    if match:
-        return match, used
-    works2, used2 = _crossref_title_search(title, mailto, limiter)
-    return _best_title_match(works2, norm_title, year), used + used2
+    sources = [primary] if primary else ["openalex", "crossref"]
+    last_exc: Optional[Exception] = None
+    for s in sources:
+        try:
+            if s == "crossref":
+                works, used = _crossref_title_search(title, mailto, limiter)
+            else:
+                works, used = _openalex_title_search(norm_title, mailto, limiter)
+        except RateLimitError as exc:
+            last_exc = exc
+            continue
+        match = _best_title_match(works, norm_title, year)
+        if match:
+            return match, used
+    return None, 0  # both rate-limited / no match -> never raises
 
 
 def _resolve_doi_less_references(
@@ -1018,6 +1258,7 @@ def _retry_assured(
     api_calls: int,
     stats: StatsDict,
     no_alternate: bool = False,
+    use_batch: bool = True,
 ) -> int:
     """Re-attempt the rows that still failed, across both sources / via title.
 
@@ -1070,6 +1311,7 @@ def _resolve_phase(
     assured: bool,
     export_path: Optional[str],
     no_alternate: bool = False,
+    use_batch: bool = True,
 ) -> int:
     """Run the full resolution pass + (optional) assured backstop and reporting."""
     _sync_resolved_status(conn)
@@ -1077,6 +1319,7 @@ def _resolve_phase(
     api_calls = _batch_resolve_references(
         conn, _fetch_unresolved_with_doi(conn, direction), source, mailto,
         limiter, max_api_calls, api_calls, stats, no_alternate=no_alternate,
+        use_batch=use_batch,
     )
     api_calls = _resolve_doi_less_references(
         conn, _fetch_unresolved_doi_less(conn, direction), mailto, limiter,
@@ -1153,6 +1396,7 @@ def harvest_references(
     assured: bool = True,
     export_path: Optional[str] = None,
     no_alternate: bool = False,
+    use_batch: bool = True,
 ) -> StatsDict:
     """Phase 1: harvest + store a seed paper's full reference list, then resolve.
 
@@ -1248,6 +1492,7 @@ def harvest_references(
                 assured,
                 export_path,
                 no_alternate,
+                use_batch,
             )
         except RateLimitError:
             stats["aborted"] = 1
@@ -1274,6 +1519,7 @@ def resolve_reference_lists(
     assured: bool = True,
     export_path: Optional[str] = None,
     no_alternate: bool = False,
+    use_batch: bool = True,
 ) -> StatsDict:
     """Phase 2: resolve every still-unresolved reference.
 
@@ -1299,7 +1545,7 @@ def resolve_reference_lists(
     try:
         api_calls = _resolve_phase(
             conn, None, source, mailto, limiter, max_api_calls, 0, stats,
-            assured, export_path, no_alternate,
+            assured, export_path, no_alternate, use_batch,
         )
     except RateLimitError:
         stats["aborted"] = 1
@@ -1320,26 +1566,84 @@ def _fetch_abstract_for_backfill(
     doi: str, source: str, mailto: Optional[str], limiter: RateLimiter,
     no_alternate: bool,
 ) -> tuple[Optional[str], int]:
-    """Fetch one paper's abstract from *source* (honouring *no_alternate*).
+    """Fetch one paper's abstract, falling back across sources on rate-limit.
 
-    Returns ``None`` on a miss. Crossref retries OpenAlex on a miss unless
-    *no_alternate* is set (or the source is Semantic Scholar, which is a
-    standalone source with no OpenAlex fallback). Raises ``RateLimitError`` if
-    the underlying limiter gives up so the caller can stop gracefully.
+    Tries *source* first; when the current source raises ``RateLimitError`` (HTTP
+    429) the next platform in :data:`_SOURCE_RATELIMIT_CHAIN` is tried and the run
+    continues (no graceful abort), unless *no_alternate* restricts the lookup to the
+    single chosen source. A plain miss (no abstract) also falls back for
+    Crossref/OpenAlex, but Semantic Scholar is standalone for not-found DOIs (a miss
+    there is returned as ``None`` without contacting other platforms). Never raises
+    ``RateLimitError`` unless every candidate in the chain is throttled, in which case
+    the caller (``backfill_abstracts``) catches it and continues to the next paper.
     """
-    if source == "openalex":
-        return _fetch_abstract_openalex(doi, mailto, limiter), 1
-    if source == "semantic_scholar":
-        return _fetch_abstract_s2(doi, mailto, limiter), 1
-    # default / crossref: retry OpenAlex on a miss unless single-source mode
-    abstract = _fetch_abstract_crossref(doi, mailto, limiter)
-    used = 1
-    if abstract is None and not no_alternate:
-        alt, used2 = _openalex_resolve_dois([doi], mailto, limiter)
-        used += used2
-        if alt:
-            abstract = (alt[0].get("abstract") or "") or None
-    return abstract, used
+    order = [source] if no_alternate else _SOURCE_RATELIMIT_CHAIN.get(source, [source])
+    last_in_chain = order[-1]
+    last_source_throttled = False
+    last_exc: Optional[RateLimitError] = None
+    used = 0
+    for src in order:
+        try:
+            if src == "openalex":
+                ab = _fetch_abstract_openalex(doi, mailto, limiter)
+            elif src == "semantic_scholar":
+                ab = _fetch_abstract_s2(doi, mailto, limiter)
+            elif src == "zotero":
+                ab = zotero_sync.fetch_abstract_via_zotero(doi, mailto, limiter)
+            else:
+                ab = _fetch_abstract_crossref(doi, mailto, limiter)
+        except RateLimitError as exc:
+            last_exc = exc
+            if src == last_in_chain:
+                last_source_throttled = True
+            continue
+        used += 1
+        if ab:
+            return ab, used
+        # Miss on this source. Crossref/OpenAlex fall back to the next platform;
+        # Semantic Scholar is standalone for not-found DOIs.
+        if src == "semantic_scholar":
+            break
+    # Only re-raise if the FINAL chain member itself was throttled: an earlier
+    # throttle that the last source recovered from (or a last-source miss that
+    # simply returned None) must not propagate -- the caller would treat a raise as
+    # "every candidate throttled" and skip the paper.
+    if last_source_throttled and isinstance(last_exc, RateLimitError):
+        raise last_exc
+    return None, used
+
+
+def snowball_coverage(conn: Any) -> dict[str, int]:
+    """Return corpus coverage counts used to guarantee titles + abstracts.
+
+    Reports total papers, papers missing an abstract / title, and -- importantly --
+    papers that are the TARGET of a ``resolved`` reference_lists row yet still lack
+    an abstract / title (those are the ones backfill must not leave behind).
+    """
+    papers_total = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+    papers_missing_abstract = conn.execute(
+        "SELECT COUNT(*) FROM papers WHERE abstract IS NULL OR abstract = ''"
+    ).fetchone()[0]
+    papers_missing_title = conn.execute(
+        "SELECT COUNT(*) FROM papers WHERE title IS NULL OR title = ''"
+    ).fetchone()[0]
+    resolved_missing_abstract = conn.execute(
+        "SELECT COUNT(*) FROM papers p "
+        "JOIN reference_lists rl ON rl.resolved_paper_id = p.id "
+        "WHERE rl.status = 'resolved' AND (p.abstract IS NULL OR p.abstract = '')"
+    ).fetchone()[0]
+    resolved_missing_title = conn.execute(
+        "SELECT COUNT(*) FROM papers p "
+        "JOIN reference_lists rl ON rl.resolved_paper_id = p.id "
+        "WHERE rl.status = 'resolved' AND (p.title IS NULL OR p.title = '')"
+    ).fetchone()[0]
+    return {
+        "papers_total": papers_total,
+        "papers_missing_abstract": papers_missing_abstract,
+        "papers_missing_title": papers_missing_title,
+        "resolved_missing_abstract": resolved_missing_abstract,
+        "resolved_missing_title": resolved_missing_title,
+    }
 
 
 def backfill_abstracts(
@@ -1349,6 +1653,7 @@ def backfill_abstracts(
     max_api_calls: Optional[int] = None,
     limiter: Optional[RateLimiter] = None,
     no_alternate: bool = False,
+    use_batch: bool = True,
 ) -> int:
     """Backfill missing abstracts for already-harvested papers (idempotent).
 
@@ -1361,9 +1666,12 @@ def backfill_abstracts(
     Args:
         conn: SQLite connection.
         source: Primary source (``"crossref"``, ``"openalex"``,
-            ``"semantic_scholar"``/``"s2"``). Crossref retries OpenAlex on a miss
-            unless *no_alternate* is set; Semantic Scholar is standalone (no
-            OpenAlex fallback).
+            ``"semantic_scholar"``/``"s2"``). On a rate-limit a source is skipped and
+            the next platform in the fallback chain is tried (Crossref/OpenAlex also
+            retry on a miss); ``--no-alternate`` disables all cross-source fallback
+            (strict single-source). Semantic Scholar is standalone for not-found
+            DOIs; on a rate-limit it falls back to OpenAlex/Crossref unless
+            ``--no-alternate``.
         mailto: Contact email for the polite Crossref / OpenAlex pool.
         max_api_calls: Stop after this many API requests (None = unlimited).
         limiter: Pre-configured limiter; one is built from the default interval
@@ -1383,6 +1691,80 @@ def backfill_abstracts(
     ).fetchall()
     updated = 0
     api_calls = 0
+
+    # Fast primary path: batched OpenAlex multi-DOI lookup fills most abstracts
+    # in ~1 call per 50 DOIs. Strictly additive: on any error it defers to the
+    # existing per-DOI chain below. Only used when OpenAlex is an allowed source
+    # (never for Semantic Scholar standalone, never under --no-alternate).
+    if (
+        use_batch
+        and not no_alternate
+        and source in ("crossref", "openalex")
+        and (max_api_calls is None or max_api_calls > 0)
+    ):
+        try:
+            batch_works, used = _openalex_batch_by_dois(
+                [r["doi"] for r in rows], mailto, limiter
+            )
+            api_calls += used
+        except Exception:
+            batch_works = []
+        if batch_works:
+            by_nd = {normalise_doi(w.get("doi")): w for w in batch_works}
+            for r in rows:
+                nd = normalise_doi(r["doi"])
+                work = by_nd.get(nd)
+                if work is None:
+                    continue
+                abstract = (work.get("abstract") or "").strip()
+                if not abstract:
+                    continue
+                conn.execute(
+                    "UPDATE papers SET abstract = ?, updated_at = current_timestamp "
+                    "WHERE id = ?",
+                    (abstract, r["id"]),
+                )
+                updated += 1
+            conn.commit()
+        # Re-query so the per-DOI loop only mops up the remainder.
+        rows = conn.execute(
+            "SELECT id, doi FROM papers "
+            "WHERE (abstract IS NULL OR abstract = '') AND doi IS NOT NULL"
+        ).fetchall()
+
+    # Fast local pre-pass: the local Zotero library (rate-limit immune, instant)
+    # fills abstracts before any slow/rate-limited external API (notably S2).
+    # Strictly additive: on any error it defers to the per-DOI chain below.
+    if use_batch and not no_alternate and (max_api_calls is None or max_api_calls > 0):
+        try:
+            zotero_works, _ = _zotero_batch_by_dois(
+                [r["doi"] for r in rows], mailto, limiter
+            )
+        except Exception:
+            zotero_works = []
+        if zotero_works:
+            by_znd = {normalise_doi(w.get("doi")): w for w in zotero_works}
+            for r in rows:
+                nd = normalise_doi(r["doi"])
+                work = by_znd.get(nd)
+                if work is None:
+                    continue
+                abstract = (work.get("abstract") or "").strip()
+                if not abstract:
+                    continue
+                conn.execute(
+                    "UPDATE papers SET abstract = ?, updated_at = current_timestamp "
+                    "WHERE id = ?",
+                    (abstract, r["id"]),
+                )
+                updated += 1
+            conn.commit()
+        # Re-query so the per-DOI loop only mops up the remainder.
+        rows = conn.execute(
+            "SELECT id, doi FROM papers "
+            "WHERE (abstract IS NULL OR abstract = '') AND doi IS NOT NULL"
+        ).fetchall()
+
     for row in rows:
         if max_api_calls is not None and api_calls >= max_api_calls:
             break
@@ -1407,6 +1789,14 @@ def backfill_abstracts(
             updated += 1
         # Commit after EACH paper so a mid-batch abort loses no completed work.
         conn.commit()
+    coverage = snowball_coverage(conn)
+    print(
+        f"  snowball coverage: papers={coverage['papers_total']} "
+        f"missing_abstract={coverage['papers_missing_abstract']} "
+        f"missing_title={coverage['papers_missing_title']} "
+        f"resolved_missing_abstract={coverage['resolved_missing_abstract']} "
+        f"resolved_missing_title={coverage['resolved_missing_title']}"
+    )
     return updated
 
 

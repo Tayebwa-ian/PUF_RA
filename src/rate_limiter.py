@@ -31,6 +31,18 @@ from email.utils import parsedate_to_datetime
 from typing import Optional
 
 
+#: Per-source pacing intervals (seconds) used when a :class:`RateLimiter` is built
+#: with ``per_source_intervals``. Crossref / OpenAlex polite pools allow high
+#: throughput (``--mailto``), Semantic Scholar is genuinely ~100 req / 5 min, and
+#: Zotero is a local read. A source absent here falls back to ``min_interval``.
+DEFAULT_SOURCE_INTERVALS = {
+    "crossref": 0.05,
+    "openalex": 0.05,
+    "semantic_scholar": 0.6,
+    "zotero": 0.0,
+}
+
+
 class RateLimitError(Exception):
     """Raised when an API rate limit could not be worked around."""
 
@@ -76,8 +88,10 @@ class RateLimiter:
         max_wait: float = 60.0,
         backoff_base: float = 2.0,
         jitter: float = 0.5,
+        per_source_intervals: Optional[dict[str, float]] = None,
     ) -> None:
         self.min_interval = max(0.0, float(min_interval))
+        self.per_source_intervals = per_source_intervals
         self.max_retries = max(1, int(max_retries))
         self.max_wait = float(max_wait)
         self.backoff_base = float(backoff_base)
@@ -87,16 +101,24 @@ class RateLimiter:
         self.total_failures = 0
         self._last_call_at: Optional[float] = None
 
-    def effective_interval(self) -> float:
-        """Current pacing interval, widened while failures persist."""
-        if self.consecutive_failures == 0:
-            return self.min_interval
-        widened = self.min_interval * (self.backoff_base ** self.consecutive_failures)
-        return min(self.max_wait, widened)
+    def _interval_for(self, source: Optional[str]) -> float:
+        """Pacing interval for *source*, falling back to ``min_interval``."""
+        if self.per_source_intervals and source in self.per_source_intervals:
+            return self.per_source_intervals[source]
+        return self.min_interval
 
-    def wait_before_call(self) -> None:
-        """Sleep until at least ``effective_interval`` has passed."""
-        interval = self.effective_interval()
+    def wait_before_call(self, source: Optional[str] = None) -> None:
+        """Sleep until at least the (source-aware) pacing interval has passed.
+
+        A healthy fast source (e.g. OpenAlex/Crossref) stays fast; a source that
+        is currently failing still backs off via adaptive widening.
+        """
+        base = self._interval_for(source)
+        if self.consecutive_failures == 0:
+            interval = base
+        else:
+            widened = base * (self.backoff_base ** self.consecutive_failures)
+            interval = min(self.max_wait, widened)
         if self._last_call_at is not None and interval > 0:
             remaining = interval - (time.monotonic() - self._last_call_at)
             if remaining > 0:

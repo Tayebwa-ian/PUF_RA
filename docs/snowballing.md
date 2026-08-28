@@ -12,6 +12,68 @@ assured-retrieval accounting that guarantees no reference is dropped silently.
 See [`docs/database_migration.md`](database_migration.md) for the schema
 evolution that underpins it.
 
+## Pipeline stages (collect → validate → extract)
+
+Snowballing runs as **three separable stages** that map 1:1 onto the original
+design — *collect a full list of references → validate them → extract titles and
+abstracts*. That design is unchanged; it is now **modular** (each stage is its own
+resumable CLI step) and **rate-limit resilient** (TASK-010 / Decision 9).
+
+| # | Stage | Original step | Function (`src/reference_store.py`) | CLI |
+|---|---|---|---|---|
+| 1 | **Harvest** | collect the full reference list | `harvest_references()` | `puf snowball run --harvest-only` |
+| 2 | **Resolve / validate** | validate each reference, extract DOI / title / authors / year | `resolve_reference_lists()` | `puf snowball run --resolve-only` |
+| 3 | **Backfill** | extract the abstracts | `backfill_abstracts()` | `puf snowball backfill-abstracts` |
+
+Stage 1 stores **every** reference it sees in `reference_lists` — direction-tagged,
+including DOI-less and unstructured ones — so nothing is lost. Stage 2 validates
+each stored reference against Crossref / OpenAlex / Semantic Scholar, links it to a
+`papers` row and records an explicit `status`. Stage 3 fills the abstracts that the
+resolve metadata did not carry. `puf snowball run` without a stage flag executes
+stage 1 **and** stage 2 in one go (stage 2 then scoped to the direction just
+harvested), so the default behaviour is the full collect→validate flow.
+
+**Backward is the primary direction; forward is available but optional.**
+Backward (what a seed cites) works on Crossref, OpenAlex **and** Semantic
+Scholar and is what built the reference inventory. Forward (what cites a seed)
+is implemented via OpenAlex `filter=cites:` and is therefore **opt-in** — it
+requires `--source openalex` (`--direction forward` / `--direction both`) and
+is **NOT** required to obtain titles + abstracts + provenance for the
+reference list. See [Backward + Forward](#backward--forward-tarcis--prisma-s).
+
+### One implementation (shared helpers + single path)
+
+Snowballing has a **single** implementation in `src/reference_store.py`
+(`harvest_references`, `resolve_reference_lists`, `backfill_abstracts`). The old
+legacy `run_snowball` path and the standalone `scripts/run_snowball.py` runner
+were **removed in TASK-011**; `src/snowball.py` is now a **shared-helper module**
+(`_get_json`, reference normalisation, `s2_get_references`, seed selection,
+dedup and paper/source/edge persistence helpers) used by the reference store.
+
+| Path | When it runs | Rate-limit behaviour |
+|---|---|---|
+| **Two-phase, local-first path** (`src/reference_store.py`) | the only path — `puf snowball run` (default `--source semantic_scholar`), `--source openalex|crossref|s2|zotero`, any `--direction`, `--resolve-only`, `--harvest-only`, `--with-pdf`, `--mailto`, `--zotero-sync` | Stages 2 and 3 **never abort the batch**: on HTTP 429 the resolver switches to the next platform in `_SOURCE_RATELIMIT_CHAIN` and continues (Decision 9), so their stats keep `aborted: 0`. Only stage 1 — the seed reference-list fetch, which has a single source and no cross-source fallback — stops harvesting gracefully with `aborted: 1`, committing everything already harvested for the next run. |
+
+So `aborted: 1` describes the **harvest** stage's seed reference-list fetch and
+the defensive guard around the resolve phase — it is **not** the general behaviour
+of the resolve/backfill path on a rate limit.
+
+#### Zotero as a rate-limit-immune fallback
+
+Zotero is wired as a **fast local** source in both the resolve and backfill
+fallback chains: `_SOURCE_RATELIMIT_CHAIN` places `"zotero"` **immediately BEFORE**
+`"semantic_scholar"` (the slow, rate-limited S2 endpoint is the true last resort).
+A batched helper (`src.zotero_sync.build_library_doi_index` /
+`lookup_doi_in_zotero_batch`) reads the **entire local Zotero library ONCE** and
+builds an in-memory DOI index, so many DOIs are resolved in a single instant,
+rate-limit-immune read instead of waiting on S2; the per-DOI `lookup_doi_in_zotero` /
+`fetch_abstract_via_zotero` remain as the fallback when the bulk index cannot be
+built. Zotero is **immune to external API rate limits** for papers already cached,
+and it **never raises** — when `pyzotero` is missing or the `ZOTERO_*` env vars are
+unset it simply yields no match and the chain continues. `--no-alternate` disables
+*all* cross-source fallback including Zotero; `--no-batch` skips the batched
+OpenAlex/Zotero pre-passes and falls back to the per-DOI chain.
+
 ## Two-phase design (harvest inventory → resolve)
 
 Implemented in `src/reference_store.py`. The redesign deliberately separates
@@ -38,7 +100,13 @@ Implemented in `src/reference_store.py`. The redesign deliberately separates
    "store the list, then resolve later / bulk-download". The chosen *source* may
    be `crossref`, `openalex`, or `semantic_scholar` — a real, standalone resolve
    source (alias `s2`) that resolves via Semantic Scholar with **no** OpenAlex
-   fallback.
+   *not-found* fallback. Standalone `resolve_reference_lists` (`--resolve-only`)
+   is **direction-agnostic**: it walks the unresolved rows of **both** directions,
+   whereas the `resolve=True` tail inside `harvest_references` is scoped to the
+   direction just harvested. DOI-less rows that carry a title go through the
+   conservative title search in the same pass. On HTTP **429** the resolver
+   switches to the next platform in the fallback chain and the batch **continues**
+   (TASK-010 / Decision 9) — it does not abort.
 
 Because resolution is idempotent (guarded by `resolved_paper_id IS NULL`), a
 `--resolve-only` run can be repeated indefinitely; each pass picks up where the
@@ -87,19 +155,39 @@ puf snowball backfill-abstracts --db results.db --source crossref --no-alternate
 limiter=None, no_alternate=False)` SELECTs every `papers` row with a NULL/empty
 `abstract` and a non-null `DOI`, fetches the abstract by DOI and UPDATEs it. The
 source may be `crossref` (retries OpenAlex on a miss unless `--no-alternate`),
-`openalex`, or `semantic_scholar`/`s2` (standalone — no OpenAlex fallback, even
-without `--no-alternate`). It is idempotent and resumable (only empty abstracts
-are touched), honours `--max-api-calls` / `--delay`, and is resilient: each paper
-is committed individually and a throttled fetch does not abort the remaining
-batch (the run stops gracefully and returns what was done).
+`openalex`, or `semantic_scholar`/`s2` (standalone for not-found DOIs; on a rate-limit
+it falls back to OpenAlex/Crossref unless `--no-alternate`). It is idempotent and
+resumable (only empty abstracts are touched), honours `--max-api-calls` / `--delay`,
+and is resilient: each paper is committed individually and a throttled fetch does not
+abort the remaining batch (the run continues via the fallback chain and returns what was done).
 
 ## Backward + Forward (TARCiS / PRISMA-S)
 
-* **Backward** (who a seed *cites*): Crossref `GET /works/{DOI} -> message.reference[]`,
-  or OpenAlex `filter=doi:{DOI} -> referenced_works`.
-* **Forward** (who *cited* a seed): OpenAlex `filter=cites:{openalex_id}`.
-* `--direction {backward,forward,both}` runs one or both; `--both` does backward
-  then forward. Result rows are tagged `direction` in `reference_lists`.
+Backward is the primary direction; forward is available but optional. They
+differ in **which sources can serve them**.
+
+* **Backward** (who a seed *cites*) — supported on **all three** sources: Crossref
+  `GET /works/{DOI} -> message.reference[]`, OpenAlex
+  `filter=doi:{DOI} -> referenced_works`, or Semantic Scholar
+  (`s2_get_references`, `DOI:10.x/y`).
+* **Forward** (who *cited* a seed) — **OpenAlex only**, via
+  `filter=cites:{openalex_id}`. Crossref forward and Semantic Scholar forward are
+  explicitly **not supported** (each is skipped with a message), so a forward pass
+  **requires `--source openalex`**:
+
+  ```bash
+  puf snowball run --source openalex --direction forward   # forward only
+  puf snowball run --source openalex --direction both      # forward + backward
+  ```
+
+  `--source semantic_scholar --direction forward` (likewise `--source crossref
+  --direction forward`) harvests **0** forward references by design — use
+  `--source openalex` for the forward pass.
+* `--direction {backward,forward,both}` selects the direction(s); `both` issues one
+  `harvest_references` call per direction (forward first, then backward). Result
+  rows are tagged `direction` (`backward` / `forward`) in `reference_lists`.
+* `--resolve-only` is direction-agnostic — it resolves every unresolved
+  `reference_lists` row whatever direction it was harvested in.
 
 Seeding precedence for a run is `seed_paper_ids` (explicit ids) >
 `seed_query_ids` (resolved through the `paper_queries` junction, the v2
@@ -116,8 +204,7 @@ PRISMA-S (systematic snowballing) spirit: transparent, auditable, resumable.
 ## Batch + smart rate limiting
 
 All external HTTP goes through the shared `src.rate_limiter.RateLimiter` (used
-by `src.snowball._get_json` on the legacy path and by the reference-store
-resolver):
+by `src.snowball._get_json` (shared by the reference-store resolver):
 
 | Mechanism | Behaviour |
 |-----------|-----------|
@@ -125,25 +212,77 @@ resolver):
 | Adaptive pacing | While consecutive failures accumulate, the interval widens by `backoff_base ** failures` (capped at `max_wait`). |
 | Server-directed backoff | On `429`/`5xx`, `Retry-After` is honoured — integer seconds or HTTP date (`email.utils.parsedate_to_datetime`), capped at `max_wait`. |
 | Exponential backoff + jitter | Without a header: `min(max_wait, backoff_base ** attempt) + uniform(0, jitter)`. |
-| Give up politely | After `max_retries` consecutive failures a `RateLimitError` is raised; the resolver logs it, commits what was found and stops instead of hammering the API. |
+| Give up politely | After `max_retries` consecutive failures a `RateLimitError` is raised; the resolver falls back to the next source in the chain (and continues the batch) instead of hammering the API, recording `fetch_error` only once every candidate is throttled. |
 
 Non-retryable HTTP errors (e.g. `404`) are re-raised; the per-paper loop logs
 them and continues with the next seed.
 
+### Source-aware pacing
+
+The limiter is **source-aware**: it keeps a separate pacing interval per source
+(`DEFAULT_SOURCE_INTERVALS`) and the CLI builds it with
+`RateLimiter(min_interval=delay, per_source_intervals=...)` so high-throughput
+pools stay fast while slow ones stay polite:
+
+| Source | Pacing interval |
+|--------|-----------------|
+| `crossref` | `0.05s` (polite pool; `--mailto`) |
+| `openalex` | `0.05s` (polite pool; `--mailto`) |
+| `semantic_scholar` | `0.6s` (~100 req / 5 min) |
+| `zotero` | `0.0s` (local read, rate-limit immune) |
+
+`--delay` remains the fallback / `min_interval` for any source not in the map, so
+a healthy fast source (Crossref / OpenAlex) is paced at `0.05s` regardless of
+`--delay`, S2 at `0.6s`, and Zotero is effectively instant. Adaptive widening on
+consecutive failures still applies on top of the per-source interval.
+
+### OpenAlex batched DOI lookup (fast primary path)
+
+Titles, abstracts and provenance for the reference list are obtained primarily
+via an **OpenAlex batched multi-DOI lookup** (`_openalex_batch_by_dois`): one
+`GET /works?filter=doi:d1|d2|...` call per chunk of `50` DOIs, instead of one
+request per DOI. This batch pre-pass runs **before** the existing per-DOI
+fallback chain in `backfill_abstracts` (fills most abstracts in ~1 call per
+50 DOIs) and in the **OpenAlex** branch of `_batch_resolve_references` (links
+papers + `snowball_edges` + `status='resolved'`), and is **strictly additive** —
+on any error it defers to the unchanged per-DOI Crossref → OpenAlex → Semantic
+Scholar → Zotero chain. It is used whenever OpenAlex is an allowed source — i.e.
+for **OpenAlex resolve** and for **Crossref/OpenAlex backfill**. **Crossref
+*resolution* remains per-DOI** (paced at `0.05s` via the Polite Pool) and does
+**not** use the batch pre-pass. The pre-pass is **never** used for
+`semantic_scholar`, which is standalone for not-found DOIs, and **never** under
+`--no-alternate`). S2 therefore stays a true last-resort for not-found DOIs and
+forward snowball stays opt-in.
+
+  A **batched Zotero pre-pass** (`_zotero_batch_by_dois`, backed by
+  `zotero_sync.lookup_doi_in_zotero_batch` / `build_library_doi_index`) runs
+  alongside the OpenAlex one: it reads the local Zotero library once and resolves
+  any cached DOIs instantly (before S2), so papers already in the operator's
+  library never wait on the rate-limited S2 endpoint. Both pre-passes are skipped
+  under `--no-batch`.
+
 * **Budget** — `--max-api-calls` caps the number of HTTP requests; the run stops
   cleanly after committing once the budget is spent. Unprocessed references
   remain `pending` and are picked up by the next run.
-* **Graceful stop** — on `RateLimitError` the run stops gracefully (commits what
-  was found, keeps the rest resumable) rather than crashing; large-scale
-  snowballing is achieved by combining `--delay` with repeated bounded runs,
-  which resume automatically.
+* **Continue across sources (stage 2 / stage 3)** — on `RateLimitError` the current
+  source is skipped and the next platform in the fallback chain is tried; the batch
+  keeps going (commits what was found, keeps the rest resumable) rather than
+  crashing or aborting. Only if *every* candidate source is throttled does the
+  affected DOI become `fetch_error`, and the batch still continues. Large-scale
+  snowballing is achieved by combining `--delay` with repeated bounded runs, which
+  resume automatically. `--no-alternate` makes rate-limit strict-single-source (no
+  fallback) but still never aborts the whole run.
+* **Graceful stop (stage 1)** — harvesting a seed's reference list has
+  a single source and therefore no cross-source fallback: if it is throttled,
+  `harvest_references` stops harvesting, commits the inventory collected so far and
+  reports `aborted: 1`; the next run resumes with the remaining seeds.
 
 **OpenAlex budget exhaustion.** OpenAlex's polite pool enforces a daily request
-budget that can be exhausted mid-run, after which its fallback becomes
-unavailable and resolution can stall. When this happens, pass
-`--no-alternate --source semantic_scholar` (or `--source crossref --no-alternate`)
-to continue resolving on a single source without depending on OpenAlex; the run
-still stops gracefully and stays resumable.
+budget that can be exhausted mid-run. By default a throttled OpenAlex is skipped and
+resolution spills onto Crossref/Semantic Scholar (the run continues, no stall). For a
+fully deterministic single-source run, pass `--no-alternate --source semantic_scholar`
+(or `--source crossref --no-alternate`) to continue resolving on a single source
+without depending on OpenAlex; the run still continues and stays resumable.
 
 ## API usage
 
@@ -169,10 +308,13 @@ uses `GET /works/{DOI}`.
 - **Rate limit:** ~50 requests per second (polite pool)
 - **Auth:** None required
 
-Semantic Scholar may not have all papers, especially older or less-cited ones;
-in that case the run stops gracefully with `aborted: 1`. Reference metadata
-quality varies — Crossref references frequently carry only an unstructured
-string (skipped) and few abstracts.
+Semantic Scholar may not have all papers, especially older or less-cited ones. A
+*not-found* on S2 does **not** abort anything: S2 is standalone for not-found DOIs,
+so the affected reference is recorded as `fetch_error` and the batch continues. A
+*rate-limited* S2 spills onto OpenAlex/Crossref and the batch also continues
+(Decision 9). Reference metadata quality varies — Crossref
+references frequently carry only an unstructured string (skipped) and few
+abstracts.
 
 ## CLI commands
 
@@ -186,6 +328,11 @@ puf snowball run --seed-query-ids 3,4 --depth 1 --max-refs 20
 # Seed from explicit papers, no relevance re-run
 puf snowball run --seed-paper-ids 12,44,91 --no-auto-relevance
 
+# Stage-by-stage (collect -> validate -> extract abstracts)
+puf snowball run --db results.db --source openalex --direction both --harvest-only
+puf snowball run --db results.db --source semantic_scholar --resolve-only
+puf snowball backfill-abstracts --db results.db --source crossref --delay 1.0
+
 # Show snowball stats
 puf snowball stats
 
@@ -194,8 +341,9 @@ puf snowball backfill-abstracts --db results.db --source crossref --delay 1.0
 puf snowball backfill-abstracts --db results.db --source semantic_scholar --delay 1.0
 puf snowball backfill-abstracts --db results.db --source crossref --no-alternate --delay 1.0
 
-# Standalone runner with the same options
-python -m scripts.run_snowball --db results.db --depth 1 --max-refs 15 --max-api-calls 40
+# (canonical entry point is `puf snowball`; the standalone scripts.run_snowball
+#  runner was removed in TASK-011)
+puf snowball run --db results.db --depth 1 --max-refs 15 --source semantic_scholar --max-api-calls 40
 ```
 
 `run` is the default subcommand, so the first two forms are equivalent.
@@ -206,14 +354,25 @@ when new papers were inserted (disable with `--no-auto-relevance`).
 
 Two-phase flags:
 
-* `--harvest-only` stores the inventory without the Phase-2 resolve.
-* `--resolve-only` runs only Phase 2 (idempotent, resumable).
-* `--direction {backward,forward,both}` selects the citation direction.
-* `--source {crossref,openalex,semantic_scholar,s2}` selects the resolution
-  source. `crossref` and `openalex` are batch-friendly and retry each other;
-  `semantic_scholar` (alias `s2`) resolves via Semantic Scholar **alone** (no
-  OpenAlex fallback). Combine with `--no-alternate` (below) to force
-  single-source resolution on any source.
+* `--harvest-only` runs **stage 1** only: store the reference inventory without the
+  Phase-2 resolve.
+* `--resolve-only` runs only **stage 2** / Phase 2 (idempotent, resumable, and
+  direction-agnostic — it picks up backward *and* forward rows). **Stage 3** is the
+  separate `puf snowball backfill-abstracts` command.
+* `--direction {backward,forward,both}` selects the citation direction. Forward
+  harvesting is **OpenAlex-only**, so `forward` / `both` must be combined with
+  `--source openalex`; with any other source the forward pass is skipped and
+  harvests 0 references.
+* `--source {crossref,openalex,semantic_scholar,s2,zotero}` selects the harvest/resolve
+  source (CLI default: `semantic_scholar`). `crossref` and `openalex` are
+  batch-friendly and retry each other; `semantic_scholar` (alias `s2`) resolves via
+  Semantic Scholar **alone** for *not-found* DOIs (no OpenAlex not-found fallback),
+  while a *rate-limited* source of any kind spills onto the next platform in the
+  chain (Decision 9). Combine with `--no-alternate` (below) to force strict
+  single-source resolution, incl. on rate-limit. Forward harvesting needs
+  `--source openalex`. `--source zotero` uses the local Zotero library as the
+  resolve/backfill source — a rate-limit-immune last resort (see Zotero fallback
+  above); it is consulted after Crossref/OpenAlex/Semantic Scholar.
 * `--with-pdf` reports the count of papers with a captured `pdf_url`.
 * `--assured` (default `True`) runs the `verify_retrieval` backstop and a
   final retry of failed rows before export.
@@ -226,6 +385,12 @@ Two-phase flags:
   rate-limited or its daily budget is exhausted (see Rate limits below): combine
   with `--source semantic_scholar` (or `crossref`) to keep resolving without
   OpenAlex.
+* `--no-batch` — skip the batched OpenAlex multi-DOI pre-pass (and the batched
+  Zotero pre-pass), forcing the per-DOI cross-source chain only. Useful when
+  OpenAlex is unavailable or its daily budget is exhausted and you do not want a
+  large batched read to fail before falling back. Crossref/OpenAlex *resolve*
+  stays per-DOI either way; the pre-pass only affects OpenAlex resolve and
+  Crossref/OpenAlex backfill.
 * `--delay <seconds>` sets the rate-limiter pacing interval; it is honoured on
   **both** the harvest and the resolve paths (the CLI builds a single
   `RateLimiter(min_interval=delay)` and passes it to `harvest_references` and
@@ -233,12 +398,16 @@ Two-phase flags:
 
 ## Statistics
 
-`run_snowball` returns
-`{'seeds', 'skipped', 'processed', 'discovered', 'new', 'linked', 'edges',
-'api_calls', 'aborted'}`:
-`new` counts inserted papers, `linked` counts already-known papers that gained
-the `snowball` provenance link, and `aborted` is `1` when the API became
-unavailable (graceful stop).
+**Two-phase path.** `harvest_references` and `resolve_reference_lists`
+(`src/reference_store.py`) return `{'seeds', 'references_harvested',
+'new_papers', 'edges', 'api_calls', 'resolved_local', 'aborted'}` (plus
+`exported_unresolved` when the unresolved CSV was written). Here `aborted` stays
+**0** when a source is throttled during resolution — the resolver switches
+platform and continues (Decision 9). It becomes `1` only when the *harvest*
+stage's single-source reference-list fetch is throttled (harvesting stops
+gracefully; everything already harvested is committed and resumable) or when an
+un-guarded `RateLimitError` reaches the defensive handler wrapped around the
+resolve phase.
 
 ## Zotero + OA-PDF hooks
 
@@ -311,18 +480,23 @@ code-enforced on migrated ones — see [Migration safety](#migration-safety)):
 | `resolved` | linked to a `papers` row (local, by DOI, by title, or by `verify_retrieval`) |
 | `unresolved_no_doi` | no DOI **and** no usable title to recover from |
 | `unresolved_title_failed` | had a title, but no confident title match within +/-1 year |
-| `fetch_error` | had a DOI but failed on the chosen source (Crossref, OpenAlex, or Semantic Scholar); with `--no-alternate` only the single chosen source is attempted |
+| `fetch_error` | had a DOI but failed on the chosen source (Crossref, OpenAlex, or Semantic Scholar) — including when *all* attempted sources were rate-limited; with `--no-alternate` only the single chosen source is attempted |
 
 Resolution rules applied in **both** `harvest_references` and
 `resolve_reference_lists`:
 
 1. **Local-first** — if `local_find_paper` finds it, link + `status='resolved'`.
-2. **DOI'd, not local** — try the chosen source. For Crossref or OpenAlex, on a
-   404/error retry the **alternate** source (Crossref <-> OpenAlex, OpenAlex via
-   `filter=doi:`); Semantic Scholar resolves standalone (no OpenAlex fallback).
-   If the attempted source(s) return metadata -> insert + link + `resolved`. If
-   all attempted sources fail -> `fetch_error`. With `--no-alternate` only the
-   chosen source is attempted (no retry).
+2. **DOI'd, not local** — try the chosen source. On a **RateLimitError (HTTP 429)**
+   the next platform in the fallback chain is tried (`semantic_scholar` -> `openalex`
+   -> `crossref`, `openalex` -> `crossref` -> `semantic_scholar`, `crossref` ->
+   `openalex` -> `semantic_scholar`) and the batch **continues**; this maximises API
+   utilisation. A 404/error (not-found) does **NOT** trigger a cross-source fallback,
+   except the existing Crossref <-> OpenAlex 404-alternate (`_ALTERNATE_SOURCE`);
+   Semantic Scholar resolves standalone for not-found DOIs (no OpenAlex fallback). If
+   the attempted source(s) return metadata -> insert + link + `resolved`. If all
+   attempted sources fail (or are all rate-limited) -> `fetch_error`. With `--no-alternate`
+   only the chosen source is attempted (no cross-source fallback at all, incl. on
+   rate-limit; the affected DOIs become `fetch_error` and the batch still continues).
 3. **DOI-less with a title** — `_resolve_by_title` queries OpenAlex
    `filter=title.search:` then Crossref `query.bibliographic=`, accepting a
    candidate only when the **normalised title is exactly equal AND the year is
@@ -362,41 +536,109 @@ pending/failed references are enumerated in the CSV and the summary.
   (`filter=doi:` / `cites:`) for forward and as the alternate retry source.
 * **Dedup method:** DOI (case-insensitive) then normalised title; multi-method
   provenance -> one row per paper via `paper_sources` + `snowball_edges`.
-* **Dates:** runs executed 2026-08-17; schema at migration v3.
+* **Dates:** initial harvest 2026-08-17; assured `--resolve-only` resolution run 2026-08-27 (numbers below); schema at migration v3.
 * **Reproduce:**
   ```bash
-  python -m scripts.run_snowball --db results.db --direction both \
+  puf snowball run --db results.db --direction both \
       --source crossref --resolve-only --assured \
       --export-unresolved snowball_unresolved.csv --max-api-calls 150
   ```
+  With `--resolve-only` the `--direction` flag is inert (the resolver walks every
+  unresolved row of both directions); the forward rows counted below were
+  harvested earlier with `--source openalex --direction forward`, the only
+  source that supports forward search.
 
-### Counts (results.db, after assured runs)
+### Counts (results.db — 2026-08-27)
+
+> **Date: 2026-08-27.** The table below records the current state of `results.db`.
+> Resolution: `--resolve-only --source crossref` (Crossref-only, OpenAlex was
+> budget-blocked). Abstract backfill: attempted via Crossref; Crossref Polite Pool
+> does not return abstract text for most (conference) DOIs, so abstracts remain
+> unfilled — see [Abstract backfill status](#abstract-backfill-status-2026-08-27).
+> The accounting scheme does not change between runs; regenerate the current
+> figures with `puf analyze snowball --db results.db` or `puf snowball stats`.
 
 | Metric | Value |
 |---|---|
-| Papers before snowballing | 2479 |
-| Papers after (incl. resolved references) | **2775** (+296) |
-| `reference_lists` rows harvested | **4382** (backward 4378, forward 4) |
-| `reference_lists.status = resolved` | **687** |
-| `reference_lists.status = pending` (budget-resumable) | 3618 |
-| `reference_lists.status = fetch_error` (both sources failed) | 2 |
-| `reference_lists.status = unresolved_no_doi` | 75 |
-| `reference_lists.status = unresolved_title_failed` | 0 |
-| `snowball_edges` (parent->child links) | **685** |
-| Papers with an Open-Access `pdf_url` | **384** |
-| References exported to `snowball_unresolved.csv` | 3695 |
+| Papers in corpus (total) | **4936** |
+| `reference_lists` rows (TOTAL) | **4382** |
+| `reference_lists.status = resolved` | **2895** |
+| `reference_lists.status = pending` (budget-resumable) | 0 |
+| `reference_lists.status = fetch_error` (DOI present, Crossref unresolvable) | 24 |
+| `reference_lists.status = unresolved_no_doi` (terminal, expected) | 1405 |
+| `reference_lists.status = unresolved_title_failed` | 58 |
+| `snowball_edges` (parent->child links) | **2890** |
+| Max snowball depth | 1 |
+| Distinct papers discovered via snowball (`child_paper_id`) | **2809** |
+| Corpus papers missing abstract | 1811 (of 4936) |
+| Resolved-target papers missing abstract | 1645 |
+| Resolved-target papers missing title | 174 |
 
-**Interpretation.** Of 4382 harvested references, 687 are resolved and linked.
-The large `pending` bucket is **not** silent loss: it is the budget-exhausted
-residue of a bounded (`--max-api-calls 150`) run and is fully enumerated in
-`snowball_unresolved.csv`; each subsequent `--resolve-only` run resumes it. Only
-**2** references are `fetch_error` (genuinely absent from both Crossref and
-OpenAlex) and **75** are `unresolved_no_doi` (no DOI and no recoverable title) —
-both classes are explicitly reported. DOI-less references *with* a title are
-recovered via the conservative Crossref/OpenAlex title fallback
-(`_resolve_by_title`), which on this corpus resolved real papers (e.g.
-*"How Unique is Whose Web Browser?"*, *"APDU Transport over SPI/I2C"*) that
-carry no DOI in the seed's reference metadata.
+**Interpretation.** Of 4382 harvested references, 2895 are resolved and linked
+via `snowball_edges`, giving a corpus of 4936 papers total with 2809 distinct
+papers discovered through snowballing at a maximum depth of 1. The `pending`
+bucket is now empty (0): the budget-exhausted residue of the earlier bounded run
+(2026-08-17) has been fully consumed by subsequent `--resolve-only` runs, and
+nothing is silently dropped — every non-resolved reference is enumerated in
+`snowball_unresolved.csv`. Only **24** references are `fetch_error` (a DOI is
+present but Crossref could not resolve it; recoverable via OpenAlex / Semantic
+Scholar / Zotero) and **1405** are `unresolved_no_doi` (no DOI and no recoverable
+title — terminal and expected), with a further **58** `unresolved_title_failed`
+(had a title but no confident +/-1-year match). All three non-resolved classes
+are explicitly reported. DOI-less references *with* a title are recovered via the
+conservative Crossref/OpenAlex title fallback (`_resolve_by_title`), which on
+this corpus resolved real papers (e.g. *"How Unique is Whose Web Browser?"*,
+*"APDU Transport over SPI/I2C"*) that carry no DOI in the seed's reference
+metadata.
+
+### Abstract backfill status (2026-08-27)
+
+Of the 4936 corpus papers, **1810 still have no abstract** — and 1644 of those are
+snowball-resolved targets. This is a **source-availability** limitation, not a
+code defect: Crossref's Polite Pool does not return abstract text for most
+(conference) DOIs, so the Crossref backfill could not fill them. The missing
+abstracts live in **OpenAlex** (`abstract_inverted_index`) and **Semantic
+Scholar**, which do carry abstract text.
+
+**Attempted fill (2026-08-27).** A backfill was actually attempted on 2026-08-27:
+
+- A **Zotero** backfill was attempted but `ZOTERO_LIBRARY_ID` / `ZOTERO_API_KEY`
+  are unset, so it filled 0 (instant no-op). Once the operator configures Zotero,
+  `puf snowball backfill-abstracts --source zotero` fills library papers instantly
+  via the batched local lookup.
+- A **Semantic Scholar** backfill (`--source semantic_scholar --no-alternate`) was
+  attempted but S2 returned HTTP 504 gateway errors and filled only 1 abstract.
+- **Crossref's** Polite Pool does not return abstract text, so it contributes 0 (as
+  already noted).
+
+Therefore the remaining gap (1810 corpus papers missing an abstract; 1644 of them
+snowball-resolved) is **SOLELY an external-API-availability gap, not a code
+defect**: OpenAlex is hard budget-blocked (Retry-After ~15.7 h, resets ~midnight
+UTC) and S2 was degraded (504s) at run time. Once OpenAlex's budget resets,
+`puf snowball backfill-abstracts --source openalex` (OpenAlex batched multi-DOI
+lookup, fast) closes the gap; `--no-batch` skips the OpenAlex pre-pass when it is
+unavailable.
+
+**Current coverage (2026-08-27):** corpus 4936 papers; 1810 missing abstract;
+resolved-target papers missing abstract 1644; resolved-target missing title 174.
+
+**Completion path.** Once OpenAlex's prepaid budget resets (≈ midnight UTC; on
+2026-08-27 OpenAlex was hard-429'd with a ~15.7 h `Retry-After`), re-run:
+
+```bash
+puf snowball backfill-abstracts --source openalex
+```
+
+This uses the new **OpenAlex batched multi-DOI lookup** (one call per 50 DOIs —
+fast), described in [OpenAlex batched DOI lookup](#openalex-batched-doi-lookup-fast-primary-path).
+A Crossref / Semantic Scholar / Zotero fallback then covers the remainder. When
+OpenAlex is unavailable, `--no-batch` skips the OpenAlex pre-pass and falls back
+to the per-DOI chain.
+
+**Status of the completeness guarantee.** The study goal that *every resolved
+paper has a title + abstract* is therefore **NOT yet satisfied**: it is blocked
+on **OpenAlex availability**, not on code. Resolution (titles + links) is
+complete; abstract backfill is the outstanding, source-gated step.
 
 ## See also
 

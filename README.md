@@ -14,7 +14,7 @@ co-authors.)
 - **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
 - **LLM screening** — 3-class (in-scope / out-of-scope / hybrid) screening using OpenAI-compatible APIs; emits structured JSONL.
 - **Evaluation harness** — compares deterministic, SBERT, and LLM-prompt screening against a human ground truth (Cohen's/Fleiss' κ, precision/recall/F1, ROC-AUC).
-- **Snowball/backward search** — Recursive expansion via reference chain following
+- **Snowball search (backward + forward)** — Citation-graph expansion in three resumable stages: **harvest** (collect each seed's full reference list) → **resolve** (validate them, extract title/authors/year) → **backfill** (extract abstracts). Backward via Crossref / OpenAlex / Semantic Scholar, forward via OpenAlex `cites:` (needs `--source openalex`); rate-limit resilient — the resolve stage switches source on HTTP 429 and keeps going
 - **Interactive TUI** — Textual-based terminal UI for browsing and filtering
 
 ## Quick Start
@@ -31,11 +31,9 @@ puf import bibtex cititations_data/query2/*.bib --query-ids 2 --source IEEE
 puf relevance evaluate
 
 # Run LLM screening (requires API key)
-puf screen --model qwen3-next-80b-a3b-instruct \
-  --api-key "$API_KEY" \
-  --base-url "https://llms.innkube.fim.uni-passau.de" \
-  --query-ids 3 4 \
-  --system-prompt system_prompt.txt
+puf eval screen --prompt config/prompts/p2_rubric.txt --model "$MODEL" \
+  --api-key "$API_KEY" --base-url "$BASE_URL" --query-ids 3 4 \
+  --out data/evals/llm_p2_${MODEL}.jsonl --prompt-id P2
 
 # ---- Evaluation study (see docs/evaluation.md) ----
 puf eval export-papers data/ground_truth/ground_truth_template.csv
@@ -61,6 +59,10 @@ puf relevance paper <id>
 puf relevance stats
 puf screen --model <name> --api-key <key> --base-url <url> --query-ids <ids>
 puf snowball run --query-ids <ids> [--depth 1] [--max-refs 20]
+                 [--source <semantic_scholar|crossref|openalex|s2|zotero>]
+                 [--direction <backward|forward|both>]   # forward/both require --source openalex
+                 [--harvest-only | --resolve-only] [--delay 1.0] [--max-api-calls 40] [--no-alternate] [--no-batch]
+puf snowball backfill-abstracts [--source <crossref|openalex|semantic_scholar|s2|zotero>] [--delay 1.0] [--no-batch]
 puf snowball stats
 puf tui
 puf eval ingest <files...>
@@ -85,7 +87,8 @@ PUF_RA/
 │   ├── db_schema.py
 │   ├── relevance.py
 │   ├── screening.py
-│   ├── snowball.py
+│   ├── snowball.py           # Shared-helper module (low-level snowball helpers used by reference_store)
+│   ├── reference_store.py    # Two-phase harvest → resolve → backfill (backward + forward)
 │   ├── eval_store.py        # Eval/ground-truth ingest, κ, metrics
 │   └── baselines.py         # Deterministic + SBERT baseline JSONL exporters
 ├── cli/                     # CLI entry points
@@ -114,7 +117,7 @@ PUF_RA/
 
 - `docs/design_decisions.md` — Architectural rationale and tradeoffs
 - `docs/schema.md` — ER diagram and table reference
-- `docs/snowballing.md` — Snowball search methodology, algorithm, API docs
+- `docs/snowballing.md` — Snowball methodology: harvest → resolve → backfill stages, backward + forward directions, rate-limit resilience, assured retrieval, results
 - `docs/relevance.md` — Relevance engine methodology
 - `docs/llm_screening.md` — LLM screening setup, 3-class prompts, eval JSONL
 - `docs/evaluation.md` — Evaluation study protocol, metrics, reproducibility
