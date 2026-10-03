@@ -354,6 +354,17 @@
   - src/reference_store.py:1721-1723 — `_fetch_abstract_for_backfill` docstring says "Never raises `RateLimitError`" but the code re-raises `last_exc` (any transient type) from the final chain member; callers handle it correctly (line 2132-2137 catch `RateLimitError`/`HTTPError`/`URLError`/`OSError`/`ValueError`), but the docstring could be updated for completeness.
 - Result: APPROVED
 
+## [GIT-015] Commit TASK-015 (adaptive backfill hardening)
+- Type: GIT
+- From: git-manager
+- To: orchestrator
+- Status: DONE
+- Created: 2026-10-03T16:01:26+02:00
+- Updated: 2026-10-03T16:01:26+02:00
+- Parent: TASK-015
+- Body: "Staged and committed reviewed-green TASK-015 changes. Files: src/reference_store.py, src/zotero_sync.py, tests/test_reference_store.py, docs/design_decisions.md, docs/snowballing.md, docs/pipeline.md, .kilo/board/BOARD.md."
+- Result: "bab605e"
+
 <!-- New entries go above this line. -->
 
 
