@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import difflib
 
 from typing import Any, Optional
 
@@ -339,3 +340,60 @@ def fetch_abstract_via_zotero(
         return None
     abstract = item.get("abstract")
     return abstract if abstract else None
+
+def _title_match_ratio(a: str, b: str) -> float:
+    """Tolerant title similarity in [0, 1] (NFKC + punctuation/space collapse)."""
+    return difflib.SequenceMatcher(None, normalise_title(a), normalise_title(b)).ratio()
+
+
+def search_title_in_zotero(title: str) -> Optional[dict[str, Any]]:
+    """Find a Zotero library item by tolerant title match (rate-limit immune).
+
+    Builds the local library index once via ``zotero.everything(zotero.items())``
+    (the same client pattern as :func:`build_library_doi_index`) and returns a
+    normalised ``{doi, title, authors, year, abstract, publication_title}`` dict for
+    the item whose normalised title best matches *title*. Returns ``None`` when
+    pyzotero is missing, ``ZOTERO_*`` is unset, or no item matches. Never raises:
+    a network/API failure yields ``None`` so the caller falls back to other sources.
+    """
+    if not title:
+        return None
+    try:
+        from src.snowball import normalise_title
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        zotero = _build_zotero_client()
+        if zotero is None:
+            return None
+        items = zotero.everything(zotero.items())
+    except Exception:  # noqa: BLE001 - the Zotero API can raise anything
+        return None
+    best: Optional[dict[str, Any]] = None
+    best_ratio = 0.0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
+        meta = _normalise_zotero_item(data)
+        if meta is None:
+            continue
+        t = meta.get("title") or ""
+        if not t:
+            continue
+        ratio = _title_match_ratio(t, title)
+        if ratio >= 0.85 and ratio > best_ratio:
+            best = meta
+            best_ratio = ratio
+    if best is None:
+        return None
+    return {
+        "doi": best.get("doi"),
+        "title": best.get("title", ""),
+        "authors": best.get("authors", ""),
+        "year": best.get("year"),
+        "abstract": best.get("abstract", ""),
+        "publication_title": best.get("publication_title", ""),
+    }

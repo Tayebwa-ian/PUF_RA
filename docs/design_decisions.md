@@ -263,3 +263,47 @@ continues.
   longer exists. `auto_relevance` (re-running relevance evaluation when new
   papers are inserted) is ported into the new path; LLM `auto_screen` remains out
   of scope.
+
+## Decision 11: Adaptive, error-driven abstract backfill (run-wide `throttled` set)
+
+**Context:** `backfill_abstracts` fills empty `papers.abstract` values after a
+harvest/resolve run. The previous design switched sources only on HTTP 429 and,
+once a source was slow/dead, would *retry that same source for every remaining
+paper* — paying a full retry/backoff penalty per paper and producing long,
+unproductive runs. We needed backfill to be both **fast** (batched pre-passes)
+and **resilient** (recover from any transient error, not just 429) while never
+stalling on a dead source for the whole run.
+
+**Decision:** `backfill_abstracts` keeps a single **run-wide `throttled: set[str]`**
+for the entire run. Every batch pre-pass and the per-DOI fallback
+(`_fetch_abstract_for_backfill`) and the title-search path
+(`_backfill_title_search`) consult this set; a source that raises *any* transient
+error — `RateLimitError` (HTTP 429), `URLError`, `OSError`, `TimeoutError`, or
+`HTTPError` with `code >= 500` — is added to `throttled` and **skipped for the
+rest of the run**. Backfill therefore covers **three retrieval modes** (batched
+multi-DOI pre-passes, single-DOI per-paper fallback, and title-based retrieval
+for DOI-less papers) across **all four sources** (Crossref, OpenAlex, Semantic
+Scholar/S2, and the local Zotero library). The batch pre-passes run in the
+**fast-to-slow** order **Zotero (local, free) -> OpenAlex -> Crossref -> S2**, each
+guarded by `if source not in throttled` and wrapped so a transient error marks the
+source dead and defers to the per-DOI loop. `--no-alternate` stays strictly
+single-source but still records a dead source in `throttled` so other papers skip
+it (no long delays).
+
+**Rationale / Why it exists:**
+- **No long delays.** A dead source is attempted once, then `throttled` for the
+  remainder of the run; later papers never pay its retry/backoff cost.
+- **Broader resilience.** Network outages / 5xx are handled exactly like 429 —
+  automatic switch to the next platform instead of an abort.
+- **Title coverage for all four sources.** DOI-less papers now fall back through
+  Crossref -> OpenAlex -> S2 -> Zotero (the last being a tolerant local best-title
+  match), so a title-only paper is filled whenever *any* source has it.
+
+**Consequences:**
+- Each run is idempotent and resumable: only empty abstracts are touched and every
+  row commits individually, so a mid-run failure loses no completed work.
+- `search_title_in_zotero` (in `src/zotero_sync.py`) adds a tolerant local
+  title lookup; it never raises and is rate-limit immune.
+- A `RateLimitError`/`TimeoutError`/`URLError` from the final chain member is
+  still re-raised to the caller (caught and treated as "move on"), but because the
+  source is already in `throttled`, no further paper retries it.

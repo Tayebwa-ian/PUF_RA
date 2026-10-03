@@ -294,6 +294,66 @@
 - Result: APPROVED
 
 
+## [TASK-015] Adaptive, error-driven backfill across batch/single/title modes for all 4 sources
+- Type: TASK
+- From: orchestrator
+- To: coder
+- Status: DONE
+- Priority: HIGH
+- Created: 2026-08-28T18:10:00+02:00
+- Updated: 2026-08-28T18:12:00+02:00
+- Body: "Make backfill_abstracts fast + resilient: three retrieval modes (batch/single/title) for crossref/openalex/s2/zotero; switch source on 429 AND transient errors (timeout/conn-reset/5xx); run-wide throttled-source set so a dead source is skipped (no repeated backoff -> no long delays). Document in design_decisions/snowballing/pipeline."
+- Result: "Implemented + 4 new hermetic tests pass; full tests/test_reference_store.py run pending (slow network retries in pre-existing non-hermetic prepass tests, environmental)."
+
+## [CODER-004] Implement TASK-015 (adaptive backfill)
+- Type: CODER
+- From: coder
+- To: orchestrator
+- Status: DONE
+- Created: 2026-08-28T18:12:00+02:00
+- Updated: 2026-08-28T18:12:00+02:00
+- Body: "src/reference_store.py: added run-wide `throttled` set threaded through batch pre-passes and the per-DOI loop; `_fetch_abstract_for_backfill` now takes `throttled` and treats RateLimitError/URLError/OSError/TimeoutError/HTTPError>=500 as transient (source marked throttled, skipped for the run, switch to next); reordered batch pre-passes to Zotero->OpenAlex->Crossref->S2; added `_backfill_title_search` covering all four sources (crossref->openalex->s2->zotero). src/zotero_sync.py: added `search_title_in_zotero` (tolerant local title match, rate-limit immune, never raises). docs/design_decisions.md (Decision 11), docs/snowballing.md, docs/pipeline.md updated. 4 new hermetic tests in tests/test_reference_store.py (throttled-skip, transient-non429 switch, title-branch coverage/skip, idempotent resume)."
+- Result: DONE
+
+
+## [TEST-015] pytest tests/test_reference_store.py (TASK-015)
+- Type: TEST
+- From: tester
+- To: orchestrator
+- Status: DONE
+- Created: 2026-10-03T15:50:04+02:00
+- Updated: 2026-10-03T15:50:04+02:00
+- Parent: TASK-015
+- Body: "Ran python -m pytest tests/test_reference_store.py -q (full suite avoided — test_analysis.py spawns a blocking mcp_server subprocess)."
+- Result: "64 passed in 100.82s (0:01:40). No failures, no errors. GREEN."
+## [REVIEW-015] Adaptive backfill hardening (TASK-015)
+- Type: REVIEW
+- From: code-review
+- To: orchestrator
+- Status: DONE
+- Created: 2026-10-03T15:55:00+02:00
+- Updated: 2026-10-03T15:55:00+02:00
+- Parent: TASK-015
+- Body: |
+  Verdict: APPROVED (no blocking issues; 2 non-blocking findings). Reviewed src/reference_store.py, src/zotero_sync.py, tests/test_reference_store.py, docs/{design_decisions,snowballing,pipeline}.md.
+
+  Checks performed:
+  - (1) `python -m pytest tests/test_reference_store.py -q` => 64 passed (green).
+  - (2) `import src.reference_store; import src.zotero_sync` => imports-ok.
+  - (3) Run-wide `throttled: set[str]` is created once in `backfill_abstracts` (line 1908) and threaded through `_fetch_abstract_for_backfill` (line 1712) and `_backfill_title_search`; transient errors (`RateLimitError`, `URLError`, `OSError`, `TimeoutError`, HTTP 5xx) mark the source dead via `_is_transient` (line 1690) and skip it for the rest of the run. Confirmed.
+  - (4) Batch pre-passes run in Zotero -> OpenAlex -> Crossref -> S2 order (lines 1918, 1935, 1967, 1999), each guarded by `source not in throttled` and wrapped to record transient failures in `throttled`. Confirmed.
+  - (5) `_backfill_title_search` (crossref->openalex->s2->zotero) skips throttled sources, applies `_title_similarity >= 0.85` tolerant matching, and never raises. Confirmed.
+  - (6) `no_alternate` stays strict: `_SOURCE_RATELIMIT_CHAIN` is bypassed (`order = [source]`) and Zotero pre-pass is skipped (`use_batch and not no_alternate`). Confirmed.
+  - (7) Resolve-reference path behavior preserved: unresolved DOIs still reach `_set_ref_status(conn, row["id"], "fetch_error")` (line 1035), not `resolved`. Confirmed.
+  - (8) No dead code: all new functions are referenced. Confirmed.
+  - (9) No secrets logged; hermetic tests use monkeypatch + in-memory DB. Confirmed.
+  - (10) Docs (design_decisions Decision 11, snowballing.md 3-stage table + Zotero fallback, pipeline.md backfill details + `--no-batch` flag) accurately describe the implementation. Confirmed.
+
+  Non-blocking findings:
+  - src/reference_store.py:29 — unused import `DEFAULT_SOURCE_INTERVALS`; remove or reference it to keep imports clean.
+  - src/reference_store.py:1721-1723 — `_fetch_abstract_for_backfill` docstring says "Never raises `RateLimitError`" but the code re-raises `last_exc` (any transient type) from the final chain member; callers handle it correctly (line 2132-2137 catch `RateLimitError`/`HTTPError`/`URLError`/`OSError`/`ValueError`), but the docstring could be updated for completeness.
+- Result: APPROVED
+
 <!-- New entries go above this line. -->
 
 

@@ -152,14 +152,48 @@ puf snowball backfill-abstracts --db results.db --source crossref --no-alternate
 ```
 
 `backfill_abstracts(conn, source="crossref", mailto=None, max_api_calls=None,
-limiter=None, no_alternate=False)` SELECTs every `papers` row with a NULL/empty
-`abstract` and a non-null `DOI`, fetches the abstract by DOI and UPDATEs it. The
-source may be `crossref` (retries OpenAlex on a miss unless `--no-alternate`),
-`openalex`, or `semantic_scholar`/`s2` (standalone for not-found DOIs; on a rate-limit
-it falls back to OpenAlex/Crossref unless `--no-alternate`). It is idempotent and
-resumable (only empty abstracts are touched), honours `--max-api-calls` / `--delay`,
-and is resilient: each paper is committed individually and a throttled fetch does not
-abort the remaining batch (the run continues via the fallback chain and returns what was done).
+limiter=None, no_alternate=False, use_batch=True)` fills empty `papers.abstract`
+values for every paper that has an empty abstract **and** either a `DOI` **or** a
+non-null `title` (DOI-less, title-bearing papers are handled via title search,
+below). It runs, in order, a set of **batched** pre-passes (all skipped under
+`--no-batch` / `--no-alternate`) and then a per-DOI fallback:
+
+* **Zotero local pre-pass** (`_zotero_batch_by_dois`) -- resolves any cached DOIs
+  from the local library **first**, instantly and rate-limit immune (the free, fast
+  path that avoids every external API).
+* **OpenAlex batch pre-pass** (`_openalex_batch_by_dois`) -- runs only when the chosen
+  `source` is `openalex`; one `filter=doi:` GET per chunk of ~50 DOIs.
+* **Crossref batch pre-pass** (`_crossref_batch_by_dois`) -- one
+  `GET /works?filter=doi:a,b,c,...` per chunk of ~50 DOIs fills many abstracts in a
+  single request (~50 DOIs per GET).
+* **Semantic Scholar batch pre-pass** (`_s2_batch_by_dois`) -- one
+  `POST /paper/batch` per chunk of up to 100 DOIs (capped at <=500 ids per POST)
+  resolves many DOIs in a single round-trip.
+
+Each pre-pass is **strictly additive** and **adaptive**: on a transient error (HTTP
+429 via `RateLimitError`, a network `URLError`/`OSError`/`TimeoutError`, or a 5xx) the
+source is added to the run-wide **`throttled` set** and skipped for the *remainder of
+the run* -- so a dead source is tried exactly once, never retried per paper (no repeated
+backoff, no long delays). The per-DOI fallback loop (`_fetch_abstract_for_backfill`)
+then mops up the remainder, switching to the next platform in `_SOURCE_RATELIMIT_CHAIN`
+on *any* transient error (not just 429); a throttled fetch does not abort the batch,
+each paper commits individually, and the run returns what was done. The source may be
+`crossref` (retries OpenAlex on a miss unless `--no-alternate`), `openalex`, or
+`semantic_scholar`/`s2` (standalone for not-found DOIs; on a rate-limit it falls back to
+OpenAlex/Crossref unless `--no-alternate`). `--no-alternate` keeps the lookup strictly
+single-source, but the dead source is still recorded in `throttled` so later papers skip it.
+
+**DOI-less (title-only) papers.** After the DOI pre-passes, each title-bearing paper
+with no DOI is resolved by a tolerant title search across **all four** sources in order
+**Crossref -> OpenAlex -> Semantic Scholar -> Zotero** (`_backfill_title_search`), skipping
+any source already in the run-wide `throttled` set. A candidate is accepted only by
+`_best_title_match` (tolerant title similarity >= 0.85 via `difflib` on NFKC-normalised,
+accent/punctuation-stripped keys, with a +/-1-year guard); the Zotero match is a tolerant
+best-title match over the operator's local library. On a match the paper's `abstract`
+**and**, if it was missing, its `DOI` **and** canonical `title` are filled.
+
+It is idempotent and resumable (only empty abstracts are touched) and honours
+`--max-api-calls` / `--delay`.
 
 ## Backward + Forward (TARCiS / PRISMA-S)
 
@@ -260,6 +294,16 @@ forward snowball stays opt-in.
   any cached DOIs instantly (before S2), so papers already in the operator's
   library never wait on the rate-limited S2 endpoint. Both pre-passes are skipped
   under `--no-batch`.
+
+**Backfill batch pre-passes.** `backfill_abstracts` additionally runs **Crossref**
+(`_crossref_batch_by_dois`, ~50 DOIs per `GET /works?filter=doi:a,b,c`) and
+**Semantic Scholar** (`_s2_batch_by_dois`, `POST /paper/batch`, up to 100 DOIs per
+POST / capped <=500) batch pre-passes before the per-DOI chain, in addition to the
+OpenAlex and Zotero ones above -- all strictly additive. OpenAlex is the most
+aggressively rate-limited of the three (HTTP 429 once its daily polite-pool budget,
+which resets ~midnight UTC, is spent), so in practice **Crossref + S2 are the
+reliable everyday backfill path**; a throttled OpenAlex batch is simply skipped and
+the run continues to the next pre-pass / the per-DOI fallback.
 
 * **Budget** — `--max-api-calls` caps the number of HTTP requests; the run stops
   cleanly after committing once the budget is spent. Unprocessed references

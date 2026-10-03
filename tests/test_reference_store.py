@@ -7,7 +7,7 @@ Hermetic: no real network. External HTTP is mocked via unittest.mock on
 import json
 import sqlite3
 from unittest import mock
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -23,12 +23,18 @@ from src.reference_store import (
     backfill_abstracts,
     snowball_coverage,
     _openalex_batch_by_dois,
+    _crossref_batch_by_dois,
+    _s2_batch_by_dois,
     _normalise_crossref_item,
     _normalise_openalex_work,
     _normalise_s2_reference,
     _find_or_create_ref_paper,
+    _title_similarity,
+    _best_title_match,
+    _s2_title_search,
 )
-from src.snowball import _ensure_source_snowball, normalise_doi
+from src.snowball import _post_json
+from src.snowball import _ensure_source_snowball, normalise_doi, normalise_title, _match_title
 
 
 def _memory_db():
@@ -433,6 +439,8 @@ def test_status_column_tracked(monkeypatch):
                     "published": {"date-parts": [[2020]]},
                 }
             })
+        if "paper/search" in url:  # S2 title search (no confident match)
+            return _FakeResponse({"data": []})
         if "title.search" in url or "query.bibliographic" in url:
             # the titled-but-unfindable ref has no confident match
             if "title.search" in url:
@@ -874,6 +882,51 @@ def test_backfill_abstracts_respects_api_budget(monkeypatch):
     assert backfill_abstracts(conn, source="crossref", max_api_calls=0) == 0
 
 
+def test_backfill_abstracts_batch_prepass_skips_openalex(monkeypatch):
+    # source="crossref" + use_batch + no_alternate must still run the additive
+    # Crossref and S2 batch pre-passes (they are local/rate-limit immune) but
+    # must NEVER invoke the blocked OpenAlex batch.
+    conn = _memory_db()
+    pid_a = _insert_paper(conn, "Paper A", doi="10.1/a")
+    pid_b = _insert_paper(conn, "Paper B", doi="10.2/b")
+
+    calls = {"crossref": 0, "s2": 0, "openalex": 0}
+
+    def fake_crossref(dois, mailto, limiter, chunk_size=50, source="crossref"):
+        calls["crossref"] += 1
+        return [{"doi": "10.1/a", "abstract": "Crossref abstract for A"}]
+
+    def fake_s2(dois, mailto, limiter, chunk_size=100, source="semantic_scholar"):
+        calls["s2"] += 1
+        return [{"doi": "10.2/b", "abstract": "S2 abstract for B"}]
+
+    def fake_openalex(dois, mailto, limiter, chunk_size=50, source="openalex"):
+        calls["openalex"] += 1
+        raise AssertionError("OpenAlex batch must NOT run for source=crossref")
+
+    def fake_zotero(dois, mailto, limiter):
+        return ([], 0)
+
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", fake_crossref)
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", fake_s2)
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", fake_openalex)
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", fake_zotero)
+
+    updated = backfill_abstracts(
+        conn, source="crossref", use_batch=True, no_alternate=True
+    )
+
+    assert updated == 2
+    assert calls["crossref"] == 1
+    assert calls["s2"] == 1
+    assert calls["openalex"] == 0
+
+    a = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid_a,)).fetchone()[0]
+    b = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid_b,)).fetchone()[0]
+    assert a == "Crossref abstract for A"
+    assert b == "S2 abstract for B"
+
+
 # ---------------------------------------------------------------------------
 # Path B: Semantic Scholar as a first-class RESOLVE source
 # ---------------------------------------------------------------------------
@@ -1046,26 +1099,39 @@ def test_cli_run_passes_delay_to_resolve_limiter(monkeypatch):
 
 
 def test_backfill_resilient_to_rate_limit(monkeypatch):
-    """A throttled S2 fetch for one paper does not abort the batch; commits per paper."""
+    """A source that errors is recorded in the run-wide ``throttled`` set and skipped
+    for the rest of the run (no repeated backoff); the run still finishes and the
+    fallback source fills the abstracts."""
     conn = _memory_db()
     _insert_paper(conn, "Paper1", doi="10.1/a")
     _insert_paper(conn, "Paper2", doi="10.2/b")
 
+    s2_calls = {"n": 0}
+
     def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
-        if "10.1/a" in url:
-            raise RateLimitError("throttled")
-        return {"title": "T", "abstract": "got it", "externalIds": {"DOI": "10.2/b"}}
+        # Simulate S2 being entirely rate-limited (HTTP 429) for the whole run.
+        if source == "semantic_scholar":
+            s2_calls["n"] += 1
+            raise RateLimitError("S2 throttled")
+        # OpenAlex (the fallback) serves the abstract via its inverted index.
+        if source == "openalex":
+            return {"results": [{"abstract_inverted_index": {"got": [0], "it": [1]}}]}
+        return {"message": {"DOI": "x", "abstract": "<p>crossref fallback</p>"}}
 
     monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
 
     updated = backfill_abstracts(conn, source="semantic_scholar")
 
-    # p1 throttled -> skipped; p2 processed; batch not aborted.
-    assert updated == 1
-    stored = conn.execute(
-        "SELECT abstract FROM papers WHERE doi='10.2/b'"
-    ).fetchone()[0]
-    assert stored == "got it"
+    # S2 throttled for the run -> both papers filled via the OpenAlex fallback; the
+    # batch was never aborted (it commits per paper).
+    assert updated == 2
+    # S2 is attempted only on the first paper; the second paper skips the dead source.
+    assert s2_calls["n"] == 1
+    for doi in ("10.1/a", "10.2/b"):
+        stored = conn.execute(
+            "SELECT abstract FROM papers WHERE doi=?", (doi,)
+        ).fetchone()[0]
+        assert stored == "got it"
 
 
 def test_cli_run_passes_delay_and_no_alternate_to_harvest(monkeypatch):
@@ -1719,3 +1785,453 @@ def test_no_batch_disables_both_prepasses(monkeypatch):
     row = conn.execute("SELECT status FROM reference_lists").fetchone()
     assert row["status"] == "resolved"
     assert stats["new_papers"] == 1
+
+
+def test_match_title_strips_punctuation_and_accents():
+    assert _match_title("Caf\u00e9: A Study.") == "cafe a study"
+    assert _match_title("Proceedings of the 12th Foo") == "proceedings of the 12th foo"
+    assert _match_title("Side-Channel Analysis!") == "sidechannel analysis"
+    # idempotent on already-clean titles
+    assert _match_title("Plain Title") == "plain title"
+
+
+def test_title_similarity_tolerant():
+    # trailing period / subtitle separators are tolerated
+    assert _title_similarity("Title.", "Title") == 1.0
+    assert _title_similarity("Foo: Bar", "Foo - Bar") == 1.0
+    # clearly different titles are not similar
+    assert _title_similarity("Neural Networks", "Laser Fault Injection") < 0.5
+
+
+def test_best_title_match_accepts_near_miss():
+    works = [
+        {
+            "title": "Physical Attacks on PUFs.",
+            "year": 2019,
+            "doi": "10.1/x",
+            "abstract": "abs",
+        },
+    ]
+    norm = normalise_title("Physical Attacks on PUFs")
+    # the OLD exact-equality check rejected the trailing period; the tolerant
+    # similarity match now accepts it.
+    match = _best_title_match(works, norm, 2019)
+    assert match is not None
+    assert match["title"] == "Physical Attacks on PUFs."
+    # the year +/-1 guard is still enforced
+    assert _best_title_match(works, norm, 2025) is None
+
+
+def test_s2_title_search_normalises(monkeypatch):
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
+        assert "paper/search" in url
+        return {
+            "data": [
+                {
+                    "title": "S2 Paper",
+                    "year": 2022,
+                    "abstract": "S2 abstract text.",
+                    "externalIds": {"DOI": "10.5/s2"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+    works, used = _s2_title_search("S2 Paper", None, RateLimiter())
+    assert used == 1
+    assert len(works) == 1
+    w = works[0]
+    assert w["title"] == "S2 Paper"
+    assert w["year"] == 2022
+    assert w["abstract"] == "S2 abstract text."
+    assert normalise_doi(w["doi"]) == "10.5/s2"
+
+
+def test_backfill_abstracts_doi_less_title_search(monkeypatch):
+    conn = _memory_db()
+    pid = _insert_paper(
+        conn, "Laser Fault Injection on PUFs", doi=None, year=2021
+    )
+
+    def fake_crossref(title, mailto, limiter):
+        return [
+            {
+                "doi": "10.1/lfi",
+                "title": "Laser Fault Injection on PUFs.",
+                "authors": "",
+                "year": 2021,
+                "unstructured": "",
+                "publication_title": "",
+                "pdf_url": None,
+                "abstract": "Crossref backfilled abstract.",
+            }
+        ], 1
+
+    monkeypatch.setattr(reference_store, "_crossref_title_search", fake_crossref)
+    monkeypatch.setattr(reference_store, "_s2_title_search", lambda *a, **k: ([], 1))
+
+    assert backfill_abstracts(conn, source="crossref") == 1
+    row = conn.execute(
+        "SELECT abstract, doi FROM papers WHERE id=?", (pid,)
+    ).fetchone()
+    assert row["abstract"] == "Crossref backfilled abstract."
+    assert row["doi"] == "10.1/lfi"
+
+    # idempotent: a second run finds no empty abstracts
+    assert backfill_abstracts(conn, source="crossref") == 0
+
+
+def test_backfill_abstracts_doi_less_s2_only(monkeypatch):
+    conn = _memory_db()
+    pid = _insert_paper(
+        conn, "EM Analysis of Arbiter PUFs", doi=None, year=2018
+    )
+
+    def fake_s2(title, mailto, limiter):
+        return [
+            {
+                "doi": None,
+                "title": "EM Analysis of Arbiter PUFs",
+                "authors": "",
+                "year": 2018,
+                "unstructured": "",
+                "publication_title": "",
+                "pdf_url": None,
+                "abstract": "S2 only abstract.",
+            }
+        ], 1
+
+    monkeypatch.setattr(reference_store, "_crossref_title_search", lambda *a, **k: ([], 1))
+    monkeypatch.setattr(reference_store, "_s2_title_search", fake_s2)
+
+    # no DOI recovered, but the abstract is backfilled from S2
+    assert backfill_abstracts(conn, source="crossref") == 1
+    row = conn.execute(
+        "SELECT abstract, doi FROM papers WHERE id=?", (pid,)
+    ).fetchone()
+    assert row["abstract"] == "S2 only abstract."
+    assert row["doi"] is None
+
+
+
+def test_crossref_batch_by_dois_builds_url_and_normalises(monkeypatch):
+    """One GET with a pipe-joined ``filter=doi:`` list returns normalised items."""
+    captured: dict = {}
+
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
+        captured["url"] = url
+        captured["source"] = source
+        return {
+            "message": {
+                "items": [
+                    {"DOI": "10.1/a", "title": ["Alpha"],
+                     "abstract": "<jats>Alpha abstract.</jats>"},
+                    {"DOI": "10.2/b", "title": ["Beta"],
+                     "abstract": "<jats>Beta abstract.</jats>"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+    works = _crossref_batch_by_dois(
+        ["10.1/a", "10.2/b"], "me@example.com", RateLimiter()
+    )
+    assert "filter=doi:" in captured["url"]
+    # Crossref ORs multiple DOIs with a pipe, not a comma.
+    assert "|" in captured["url"]
+    assert "," not in captured["url"][captured["url"].index("filter=doi:"):]
+    assert "10.1/a" in captured["url"]
+    assert "10.2/b" in captured["url"]
+    assert "rows=2" in captured["url"]
+    assert "mailto=" in captured["url"]
+    assert captured["source"] == "crossref"
+    assert len(works) == 2
+    assert {w["title"] for w in works} == {"Alpha", "Beta"}
+    assert works[0]["abstract"] == "Alpha abstract."
+
+
+def test_s2_batch_by_dois_posts_ids(monkeypatch):
+    """Single POST to /paper/batch with ``ids: [DOI:...]`` returns normalised items."""
+    captured: dict = {}
+
+    def fake_post_json(url, body, rate_limiter=None, retries=None, timeout=15.0, source=None):
+        captured["url"] = url
+        captured["body"] = body
+        captured["source"] = source
+        return {
+            "data": [
+                {"externalIds": {"DOI": "10.1/a"}, "title": "Alpha", "abstract": "A abs"},
+                {"externalIds": {"DOI": "10.2/b"}, "title": "Beta", "abstract": "B abs"},
+            ]
+        }
+
+    monkeypatch.setattr(reference_store, "_post_json", fake_post_json)
+    works = _s2_batch_by_dois(["10.1/a", "10.2/b"], None, RateLimiter())
+    assert "/paper/batch?fields=" + snowball.S2_FIELDS in captured["url"]
+    assert captured["body"] == {"ids": ["DOI:10.1/a", "DOI:10.2/b"]}
+    assert captured["source"] == "semantic_scholar"
+    assert len(works) == 2
+    assert {w["title"] for w in works} == {"Alpha", "Beta"}
+    assert works[0]["abstract"] == "A abs"
+    assert works[0]["doi"] == "10.1/a"
+
+
+def test_backfill_uses_batch_fewer_fallback_calls(monkeypatch):
+    """Batched Crossref fills all DOIs so the per-DOI fallback is never invoked.
+
+    With 4 DOI-bearing + 2 DOI-less papers, the batch prepass (Crossref) and the
+    Crossref-first title search resolve everything; the slow per-DOI chain is not
+    used at all, so outbound fallback calls (0) are far fewer than the paper count.
+    """
+    conn = _memory_db()
+    dois = ["10.1/a", "10.2/b", "10.3/c", "10.4/d"]
+    for d in dois:
+        _insert_paper(conn, f"P {d}", doi=d, year=2020)
+    _insert_paper(conn, "Title Only One", doi=None, year=2019)
+    _insert_paper(conn, "Title Only Two", doi=None, year=2022)
+
+    # OpenAlex + Zotero contribute nothing (blocked / unconfigured)
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", lambda *a, **k: ([], 0))
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+    # Crossref batch fills every DOI-bearing paper in one shot
+    def fake_crossref_batch(req_dois, mailto, limiter, chunk_size=50, source="crossref"):
+        out = []
+        for d in req_dois:
+            nd = normalise_doi(d)
+            if not nd:
+                continue
+            out.append({
+                "doi": nd, "title": f"T {nd}", "authors": "A. U.", "year": 2020,
+                "unstructured": "", "publication_title": "", "pdf_url": None,
+                "abstract": f"abstract for {nd}",
+            })
+        return out
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", fake_crossref_batch)
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+
+    # Crossref title search fills the DOI-less papers; S2 title search unused
+    def fake_crossref_title(title, mailto, limiter):
+        nd = "10.9/" + title.replace(" ", "")
+        return [{
+            "doi": nd, "title": title, "authors": "", "year": None,
+            "unstructured": "", "publication_title": "", "pdf_url": None,
+            "abstract": f"title abstract for {title}",
+        }], 1
+    monkeypatch.setattr(reference_store, "_crossref_title_search", fake_crossref_title)
+    s2_title_calls = {"n": 0}
+    def fake_s2_title(title, mailto, limiter):
+        s2_title_calls["n"] += 1
+        return [], 1
+    monkeypatch.setattr(reference_store, "_s2_title_search", fake_s2_title)
+
+    # Spy on the per-DOI fallback; it must never be needed (batch filled everything)
+    fallback_calls = {"n": 0}
+    orig_fetch = reference_store._fetch_abstract_for_backfill
+    def spy_fetch(doi, source, mailto, limiter, no_alternate):
+        fallback_calls["n"] += 1
+        return orig_fetch(doi, source, mailto, limiter, no_alternate)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_for_backfill", spy_fetch)
+
+    total_papers = 6
+    updated = backfill_abstracts(conn, source="crossref")
+    assert updated == total_papers
+    assert fallback_calls["n"] == 0
+    assert fallback_calls["n"] < total_papers
+    # Crossref-first: S2 title search must not run for the DOI-less papers
+    assert s2_title_calls["n"] == 0
+    empty = conn.execute(
+        "SELECT COUNT(*) FROM papers WHERE abstract IS NULL OR abstract=''"
+    ).fetchone()[0]
+    assert empty == 0
+
+
+def test_backfill_doi_less_prefers_crossref_over_s2(monkeypatch):
+    """DOI-less papers use Crossref first; S2 title search is skipped on a match."""
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Laser Fault Injection on PUFs", doi=None, year=2021)
+
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", lambda *a, **k: ([], 0))
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+
+    def fake_crossref_title(title, mailto, limiter):
+        return [{
+            "doi": "10.9/lfi", "title": "Laser Fault Injection on PUFs.",
+            "authors": "", "year": 2021, "unstructured": "", "publication_title": "",
+            "pdf_url": None, "abstract": "Crossref backfilled abstract.",
+        }], 1
+    monkeypatch.setattr(reference_store, "_crossref_title_search", fake_crossref_title)
+    s2_title_calls = {"n": 0}
+    def fake_s2_title(title, mailto, limiter):
+        s2_title_calls["n"] += 1
+        return [{
+            "doi": None, "title": "Laser Fault Injection on PUFs",
+            "authors": "", "year": 2021, "unstructured": "", "publication_title": "",
+            "pdf_url": None, "abstract": "S2 backfilled abstract.",
+        }], 1
+    monkeypatch.setattr(reference_store, "_s2_title_search", fake_s2_title)
+
+    assert backfill_abstracts(conn, source="crossref") == 1
+    row = conn.execute(
+        "SELECT abstract, doi FROM papers WHERE id=?", (pid,)
+    ).fetchone()
+    # The abstract came from Crossref, NOT S2 (S2 was never queried)
+    assert row["abstract"] == "Crossref backfilled abstract."
+    assert row["doi"] == "10.9/lfi"
+    assert s2_title_calls["n"] == 0
+
+    # idempotent: a second run finds no empty abstracts
+    assert backfill_abstracts(conn, source="crossref") == 0
+
+
+
+# ---------------------------------------------------------------------------
+# TASK-015: adaptive, error-driven backfill (run-wide `throttled` set)
+# ---------------------------------------------------------------------------
+
+def test_backfill_skips_throttled_source_across_run(monkeypatch):
+    """A dead crossref is recorded in the run-wide ``throttled`` set and never
+    retried for later papers (no repeated backoff -> no long delays)."""
+    conn = _memory_db()
+    _insert_paper(conn, "P1", doi="10.1/a")
+    _insert_paper(conn, "P2", doi="10.2/b")
+    calls = {"crossref": 0}
+
+    def boom_crossref(doi, mailto, limiter):
+        calls["crossref"] += 1
+        raise RateLimitError("crossref throttled")
+
+    monkeypatch.setattr(reference_store, "_fetch_abstract_crossref", boom_crossref)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", lambda *a, **k: None)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_s2", lambda *a, **k: None)
+    monkeypatch.setattr(zotero_sync, "fetch_abstract_via_zotero", lambda *a, **k: None)
+    # Keep the batch pre-pass hermetic (returns []): the per-DOI crossref fetch is
+    # what records "crossref" in the run-wide throttled set (so P2 skips it).
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+
+    updated = backfill_abstracts(conn, source="crossref")
+
+    # P1 attempted crossref (raised, recorded), P2 skipped it -> called exactly once.
+    assert updated == 0
+    assert calls["crossref"] == 1
+
+
+def test_backfill_transient_non429_triggers_switch(monkeypatch):
+    """A non-429 transient error (simulated timeout URLError) on the primary source
+    still switches to the next source and fills the abstract."""
+    conn = _memory_db()
+    pid = _insert_paper(conn, "Paper", doi="10.1/a")
+
+    def boom_openalex(doi, mailto, limiter):
+        raise URLError("timed out")
+
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", boom_openalex)
+    monkeypatch.setattr(
+        reference_store, "_fetch_abstract_crossref",
+        lambda d, m, l: "Filled by crossref after openalex timed out.",
+    )
+    monkeypatch.setattr(reference_store, "_fetch_abstract_s2", lambda *a, **k: None)
+    monkeypatch.setattr(zotero_sync, "fetch_abstract_via_zotero", lambda *a, **k: None)
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+
+    updated = backfill_abstracts(conn, source="openalex")
+
+    assert updated == 1
+    stored = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid,)).fetchone()[0]
+    assert stored == "Filled by crossref after openalex timed out."
+
+
+def test_backfill_title_branch_covers_openalex_and_skips_throttled(monkeypatch):
+    """The title-only branch now tries all four sources; a source already in the
+    run-wide ``throttled`` set (crossref marked dead up front via its batch pre-pass) is skipped, and
+    OpenAlex supplies the match."""
+    conn = _memory_db()
+    # A DOI paper whose crossref fetch dies -> marks crossref throttled for the run.
+    _insert_paper(conn, "Doi Paper", doi="10.1/a")
+    pid_t = _insert_paper(conn, "Title Paper", year=2020)
+
+    calls = {"crossref_title": 0, "openalex_title": 0}
+
+    def boom_crossref(doi, mailto, limiter):
+        raise RateLimitError("crossref throttled")
+
+    monkeypatch.setattr(reference_store, "_fetch_abstract_crossref", boom_crossref)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", lambda *a, **k: None)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_s2", lambda *a, **k: None)
+    monkeypatch.setattr(zotero_sync, "fetch_abstract_via_zotero", lambda *a, **k: None)
+    # Mark crossref dead up front via its batch pre-pass so the title loop skips it.
+    def boom_crossref_batch(*a, **k):
+        raise URLError("crossref down")
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", boom_crossref_batch)
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+
+    def fake_crossref_title(title, mailto, limiter):
+        calls["crossref_title"] += 1
+        return [], 1
+
+    def fake_openalex_title(norm_title, mailto, limiter):
+        calls["openalex_title"] += 1
+        return [{
+            "title": "Title Paper", "doi": "10.9/t",
+            "abstract": "OpenAlex title abstract.", "year": 2020,
+        }], 1
+
+    monkeypatch.setattr(reference_store, "_crossref_title_search", fake_crossref_title)
+    monkeypatch.setattr(reference_store, "_openalex_title_search", fake_openalex_title)
+    monkeypatch.setattr(reference_store, "_s2_title_search", lambda *a, **k: ([], 1))
+    monkeypatch.setattr(zotero_sync, "search_title_in_zotero", lambda *a, **k: None)
+
+    updated = backfill_abstracts(conn, source="crossref")
+
+    assert updated == 1  # the title-only paper filled
+    assert calls["openalex_title"] >= 1
+    assert calls["crossref_title"] == 0  # crossref skipped (throttled)
+    stored = conn.execute("SELECT abstract FROM papers WHERE id=?", (pid_t,)).fetchone()[0]
+    assert stored == "OpenAlex title abstract."
+
+
+def test_backfill_resumes_idempotently(monkeypatch):
+    """A mid-run failure leaves already-written rows persisted; a re-run fills the
+    remainder with no duplicates and no error."""
+    conn = _memory_db()
+    p1 = _insert_paper(conn, "P1", doi="10.1/a")
+    p2 = _insert_paper(conn, "P2", doi="10.2/b")
+
+    first_fail = {"done": False}
+
+    def fake_get_json(url, rate_limiter=None, retries=None, timeout=15.0, source=None):
+        if "10.2/b" in url and not first_fail["done"]:
+            first_fail["done"] = True
+            raise RateLimitError("mid-loop failure on p2")
+        return {"message": {"DOI": "10.1/a", "title": ["P1"], "abstract": "<p>Abs</p>"}}
+
+    monkeypatch.setattr(reference_store, "_get_json", fake_get_json)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", lambda *a, **k: None)
+    monkeypatch.setattr(reference_store, "_fetch_abstract_s2", lambda *a, **k: None)
+    monkeypatch.setattr(zotero_sync, "fetch_abstract_via_zotero", lambda *a, **k: None)
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_openalex_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+
+    updated1 = backfill_abstracts(conn, source="crossref")
+    # P1 committed before the failure; P2 failed but nothing crashed.
+    a1 = conn.execute("SELECT abstract FROM papers WHERE id=?", (p1,)).fetchone()[0]
+    assert a1 == "Abs"
+    # Re-run fills the remainder idempotently.
+    updated2 = backfill_abstracts(conn, source="crossref")
+    filled = conn.execute(
+        "SELECT COUNT(*) FROM papers WHERE abstract IS NOT NULL AND abstract != ''"
+    ).fetchone()[0]
+    assert filled == 2
+    assert updated1 + updated2 >= 2
+
