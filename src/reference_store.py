@@ -26,7 +26,7 @@ from typing import Any, Iterable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 
-from src.rate_limiter import RateLimiter, RateLimitError, DEFAULT_SOURCE_INTERVALS
+from src.rate_limiter import RateLimiter, RateLimitError
 from src.snowball import (
     CROSSREF_BASE,
     S2_BASE,
@@ -88,6 +88,17 @@ def _chunk(seq: Iterable[Any], n: int) -> Iterable[list[Any]]:
     for i in range(0, len(items), n):
         yield items[i : i + n]
 
+
+def _normalize_dois(dois: list[str]) -> list[str]:
+    """Normalize and deduplicate a list of DOIs."""
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for d in dois:
+        nd = normalise_doi(d)
+        if nd and nd not in seen:
+            seen.add(nd)
+            normalised.append(nd)
+    return normalised
 
 def local_find_paper(
     conn: Any, doi: Optional[str], norm_title: Optional[str]
@@ -175,13 +186,7 @@ def _openalex_batch_by_dois(
     the per-DOI chain); other per-chunk errors are swallowed so one bad chunk never
     aborts the whole batch.
     """
-    normalised: list[str] = []
-    seen: set[str] = set()
-    for d in dois:
-        nd = normalise_doi(d)
-        if nd and nd not in seen:
-            seen.add(nd)
-            normalised.append(nd)
+    normalised = _normalize_dois(dois)
     if not normalised:
         return [], 0
     works: list[dict[str, Any]] = []
@@ -209,13 +214,7 @@ def _zotero_batch_by_dois(
     ``api_calls=0``. Any error is swallowed (returning ``([], 0)``) so the caller
     falls back to the per-DOI chain; the function never raises ``RateLimitError``.
     """
-    normalised: list[str] = []
-    seen: set[str] = set()
-    for d in dois:
-        nd = normalise_doi(d)
-        if nd and nd not in seen:
-            seen.add(nd)
-            normalised.append(nd)
+    normalised = _normalize_dois(dois)
     if not normalised:
         return [], 0
     try:
@@ -273,13 +272,7 @@ def _crossref_batch_by_dois(
     contributes nothing) so a single bad chunk never aborts the whole batch; the
     caller falls back to the per-DOI chain. Paced via ``source='crossref'``.
     """
-    normalised: list[str] = []
-    seen: set[str] = set()
-    for d in dois:
-        nd = normalise_doi(d)
-        if nd and nd not in seen:
-            seen.add(nd)
-            normalised.append(nd)
+    normalised = _normalize_dois(dois)
     if not normalised:
         return []
     works: list[dict[str, Any]] = []
@@ -315,13 +308,7 @@ def _s2_batch_by_dois(
     the per-DOI chain. Chunks are capped at ``chunk_size`` (never more than 500
     ids per S2 batch request). Paced via ``source='semantic_scholar'``.
     """
-    normalised: list[str] = []
-    seen: set[str] = set()
-    for d in dois:
-        nd = normalise_doi(d)
-        if nd and nd not in seen:
-            seen.add(nd)
-            normalised.append(nd)
+    normalised = _normalize_dois(dois)
     if not normalised:
         return []
     chunk_size = max(1, min(chunk_size, 500))
@@ -341,7 +328,6 @@ def _s2_batch_by_dois(
     except (HTTPError, URLError, OSError, ValueError, RateLimitError):
         return []
     return works
-
 
 # ---------------------------------------------------------------------------
 # reference normalisation
@@ -1821,8 +1807,6 @@ def _backfill_title_search(
                 return match, used
     return None, used
 
-
-
 def snowball_coverage(conn: Any) -> dict[str, int]:
     """Return corpus coverage counts used to guarantee titles + abstracts.
 
@@ -2079,11 +2063,6 @@ def backfill_abstracts(
     # title search (NOT OpenAlex-only) and backfill the abstract and/or a
     # recovered DOI. Idempotent: only empty abstracts are touched, the budget and
     # rate-limiter are honoured, and each paper commits on its own.
-    # DOI-less, title-bearing papers: resolve via a title search across ALL four
-    # sources (Crossref -> OpenAlex -> Semantic Scholar -> local Zotero), adaptively
-    # skipping any source recorded in *throttled* for the rest of the run. Idempotent:
-    # only empty abstracts are touched, the budget and rate-limiter are honoured, and
-    # each paper commits on its own.
     for row in title_only_rows:
         if max_api_calls is not None and api_calls >= max_api_calls:
             break
@@ -2104,8 +2083,13 @@ def backfill_abstracts(
             set_clauses.append("abstract = ?, updated_at = current_timestamp")
             params.append(abstract)
         if new_doi and not row["doi"]:
-            set_clauses.append("doi = ?")
-            params.append(new_doi)
+            conflict = conn.execute(
+                "SELECT id FROM papers WHERE doi = ? AND id != ?",
+                (new_doi, row["id"]),
+            ).fetchone()
+            if conflict is None:
+                set_clauses.append("doi = ?")
+                params.append(new_doi)
         if canonical_title and canonical_title != title:
             set_clauses.append("title = ?")
             params.append(canonical_title)

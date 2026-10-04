@@ -584,6 +584,22 @@ def _pending_doi_ref(conn, seed, doi, title):
     )
 
 
+
+def _mock_backfill_network(monkeypatch):
+    """Replace every network-touching helper used by backfill_abstracts with a
+    quick no-op so the test suite stays hermetic."""
+    monkeypatch.setattr(reference_store, "_get_json", lambda *a, **k: {})
+    monkeypatch.setattr(reference_store, "_post_json", lambda *a, **k: {})
+    monkeypatch.setattr(reference_store, "_openalex_filter", lambda *a, **k: ([], 0))
+    monkeypatch.setattr(reference_store, "_fetch_abstract_openalex", lambda *a, **k: None)
+    monkeypatch.setattr(zotero_sync, "lookup_doi_in_zotero_batch", lambda *a, **k: [])
+    monkeypatch.setattr(zotero_sync, "fetch_abstract_via_zotero", lambda *a, **k: None)
+    monkeypatch.setattr(zotero_sync, "search_title_in_zotero", lambda *a, **k: None)
+    monkeypatch.setattr(reference_store, "_crossref_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_s2_batch_by_dois", lambda *a, **k: [])
+    monkeypatch.setattr(reference_store, "_zotero_batch_by_dois", lambda *a, **k: ([], 0))
+    monkeypatch.setattr(reference_store, "_openalex_title_search", lambda *a, **k: ([], 1))
+
 def test_rate_limit_exports_unresolved_and_finishes_run(monkeypatch, tmp_path):
     """A fully rate-limited resolve phase keeps going (cross-source fallback) and
     still writes the CSV + finishes the run (no graceful abort).
@@ -767,6 +783,7 @@ def test_find_or_create_ref_paper_backfills_existing_abstract():
 
 
 def test_backfill_abstracts_crossref(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper Z", doi="10.9/z")  # abstract defaults to ""
 
@@ -790,11 +807,12 @@ def test_backfill_abstracts_crossref(monkeypatch):
 
 
 def test_backfill_abstracts_openalex_source(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper Q", doi="10.8/q")
 
     def fake_openalex_filter(filter_value, mailto, limiter):
-        return [{"abstract_inverted_index": {"neural": [0], "puf": [1]}}], 1
+        return [{"doi": "10.8/q", "abstract_inverted_index": {"neural": [0], "puf": [1]}}], 1
 
     monkeypatch.setattr(reference_store, "_openalex_filter", fake_openalex_filter)
 
@@ -804,6 +822,7 @@ def test_backfill_abstracts_openalex_source(monkeypatch):
 
 
 def test_backfill_abstracts_semantic_scholar(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper S", doi="10.7/s")
 
@@ -838,6 +857,7 @@ def test_backfill_abstracts_semantic_scholar(monkeypatch):
 
 
 def test_backfill_abstracts_s2_no_openalex_fallback(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     _insert_paper(conn, "Paper M", doi="10.6/m")
 
@@ -870,6 +890,7 @@ def test_backfill_abstracts_s2_no_openalex_fallback(monkeypatch):
 
 
 def test_backfill_abstracts_respects_api_budget(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     _insert_paper(conn, "Paper Z", doi="10.9/z")
 
@@ -883,6 +904,7 @@ def test_backfill_abstracts_respects_api_budget(monkeypatch):
 
 
 def test_backfill_abstracts_batch_prepass_skips_openalex(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     # source="crossref" + use_batch + no_alternate must still run the additive
     # Crossref and S2 batch pre-passes (they are local/rate-limit immune) but
     # must NEVER invoke the blocked OpenAlex batch.
@@ -1294,6 +1316,7 @@ def test_no_alternate_ratelimit_does_not_abort(monkeypatch):
 
 
 def test_backfill_falls_back_on_ratelimit_s2(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """A rate-limited S2 abstract fetch falls back to OpenAlex during backfill."""
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper S", doi="10.7/s")  # abstract defaults to ""
@@ -1415,6 +1438,7 @@ def test_zotero_skipped_when_unconfigured(monkeypatch):
 
 
 def test_backfill_falls_back_to_zotero(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """A rate-limited abstract fetch falls back to Zotero during backfill."""
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper Z", doi="10.7/z")  # abstract defaults to ""
@@ -1473,6 +1497,7 @@ def test_lookup_doi_in_zotero_direct():
 # ---------------------------------------------------------------------------
 
 def test_openalex_batch_backfill_fills_abstracts(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """Batched OpenAlex lookup fills most abstracts in ceil(n/50) HTTP calls.
 
     Proves batching (not per-DOI): the underlying ``_openalex_filter`` is hit once
@@ -1611,6 +1636,7 @@ def test_coverage_report(monkeypatch):
 
 
 def test_backfill_falls_back_when_batch_throttled(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """A throttled OpenAlex batch defers to the per-DOI chain (no crash)."""
     conn = _memory_db()
     pid = _insert_paper(conn, "Paper Z", doi="10.9/z")  # abstract defaults to ""
@@ -1635,6 +1661,7 @@ def test_backfill_falls_back_when_batch_throttled(monkeypatch):
 
 
 def test_no_batch_skips_openalex_prepass(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """--no-batch (use_batch=False): the OpenAlex batched pre-pass is skipped
     entirely and a per-DOI Crossref fetch still fills the abstract.
 
@@ -1848,6 +1875,7 @@ def test_s2_title_search_normalises(monkeypatch):
 
 
 def test_backfill_abstracts_doi_less_title_search(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     pid = _insert_paper(
         conn, "Laser Fault Injection on PUFs", doi=None, year=2021
@@ -1882,6 +1910,7 @@ def test_backfill_abstracts_doi_less_title_search(monkeypatch):
 
 
 def test_backfill_abstracts_doi_less_s2_only(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     conn = _memory_db()
     pid = _insert_paper(
         conn, "EM Analysis of Arbiter PUFs", doi=None, year=2018
@@ -1977,6 +2006,7 @@ def test_s2_batch_by_dois_posts_ids(monkeypatch):
 
 
 def test_backfill_uses_batch_fewer_fallback_calls(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """Batched Crossref fills all DOIs so the per-DOI fallback is never invoked.
 
     With 4 DOI-bearing + 2 DOI-less papers, the batch prepass (Crossref) and the
@@ -2046,6 +2076,7 @@ def test_backfill_uses_batch_fewer_fallback_calls(monkeypatch):
 
 
 def test_backfill_doi_less_prefers_crossref_over_s2(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """DOI-less papers use Crossref first; S2 title search is skipped on a match."""
     conn = _memory_db()
     pid = _insert_paper(conn, "Laser Fault Injection on PUFs", doi=None, year=2021)
@@ -2091,6 +2122,7 @@ def test_backfill_doi_less_prefers_crossref_over_s2(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_backfill_skips_throttled_source_across_run(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """A dead crossref is recorded in the run-wide ``throttled`` set and never
     retried for later papers (no repeated backoff -> no long delays)."""
     conn = _memory_db()
@@ -2121,6 +2153,7 @@ def test_backfill_skips_throttled_source_across_run(monkeypatch):
 
 
 def test_backfill_transient_non429_triggers_switch(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """A non-429 transient error (simulated timeout URLError) on the primary source
     still switches to the next source and fills the abstract."""
     conn = _memory_db()
@@ -2149,6 +2182,7 @@ def test_backfill_transient_non429_triggers_switch(monkeypatch):
 
 
 def test_backfill_title_branch_covers_openalex_and_skips_throttled(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """The title-only branch now tries all four sources; a source already in the
     run-wide ``throttled`` set (crossref marked dead up front via its batch pre-pass) is skipped, and
     OpenAlex supplies the match."""
@@ -2200,6 +2234,7 @@ def test_backfill_title_branch_covers_openalex_and_skips_throttled(monkeypatch):
 
 
 def test_backfill_resumes_idempotently(monkeypatch):
+    _mock_backfill_network(monkeypatch)
     """A mid-run failure leaves already-written rows persisted; a re-run fills the
     remainder with no duplicates and no error."""
     conn = _memory_db()

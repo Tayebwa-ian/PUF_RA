@@ -592,97 +592,72 @@ pending/failed references are enumerated in the CSV and the summary.
   harvested earlier with `--source openalex --direction forward`, the only
   source that supports forward search.
 
-### Counts (results.db — 2026-08-27)
+### Counts (results.db — 2026-10-04)
 
-> **Date: 2026-08-27.** The table below records the current state of `results.db`.
-> Resolution: `--resolve-only --source crossref` (Crossref-only, OpenAlex was
-> budget-blocked). Abstract backfill: attempted via Crossref; Crossref Polite Pool
-> does not return abstract text for most (conference) DOIs, so abstracts remain
-> unfilled — see [Abstract backfill status](#abstract-backfill-status-2026-08-27).
-> The accounting scheme does not change between runs; regenerate the current
-> figures with `puf analyze snowball --db results.db` or `puf snowball stats`.
+> **Date: 2026-10-04.** The table below records the current state of `results.db` after the OpenAlex backfill that resolved 937 papers with abstracts. Regenerate the current figures with `puf snowball stats`.
+
+#### Corpus Paper Statistics
 
 | Metric | Value |
 |---|---|
-| Papers in corpus (total) | **4936** |
-| `reference_lists` rows (TOTAL) | **4382** |
-| `reference_lists.status = resolved` | **2895** |
-| `reference_lists.status = pending` (budget-resumable) | 0 |
-| `reference_lists.status = fetch_error` (DOI present, Crossref unresolvable) | 24 |
-| `reference_lists.status = unresolved_no_doi` (terminal, expected) | 1405 |
-| `reference_lists.status = unresolved_title_failed` | 58 |
-| `snowball_edges` (parent->child links) | **2890** |
+| Papers in corpus (total) | **4992** |
+| Papers with DOI + Title + Abstract (fully usable) | **4139** |
+| Papers with abstract | 4462 |
+| Papers missing abstract | 530 |
+| Papers with DOI | 4764 |
+| Papers missing DOI | 228 |
+| Papers with title | 4835 |
+| Papers missing title | 157 |
+
+#### Papers by Source
+
+| Source | Paper Count |
+|---|---|
+| snowball | **2801** |
+| query1:ACM | 1000 |
+| query2:IEEE | 756 |
+| query2:ACM | 609 |
+| query1:IEEE | 418 |
+
+#### Reference Lists Status Distribution
+
+| Status | Count | With DOI | Without DOI |
+|---|---|---|---|
+| `resolved` | **2993** | 2948 | 45 |
+| `pending` (budget-resumable) | 232 | 0 | 232 |
+| `fetch_error` (DOI present, all sources exhausted) | 24 | 24 | 0 |
+| `unresolved_no_doi` (terminal, expected) | 1405 | 0 | 1405 |
+| `unresolved_title_failed` | 51 | 0 | 51 |
+| **TOTAL** | **4705** | | |
+
+#### Snowball Edges Statistics
+
+| Metric | Value |
+|---|---|
+| `snowball_edges` (parent->child links) | **2952** |
 | Max snowball depth | 1 |
-| Distinct papers discovered via snowball (`child_paper_id`) | **2809** |
-| Corpus papers missing abstract | 1811 (of 4936) |
-| Resolved-target papers missing abstract | 1645 |
-| Resolved-target papers missing title | 174 |
+| Distinct papers discovered via snowball (`child_paper_id`) | **2867** |
 
-**Interpretation.** Of 4382 harvested references, 2895 are resolved and linked
-via `snowball_edges`, giving a corpus of 4936 papers total with 2809 distinct
-papers discovered through snowballing at a maximum depth of 1. The `pending`
-bucket is now empty (0): the budget-exhausted residue of the earlier bounded run
-(2026-08-17) has been fully consumed by subsequent `--resolve-only` runs, and
-nothing is silently dropped — every non-resolved reference is enumerated in
-`snowball_unresolved.csv`. Only **24** references are `fetch_error` (a DOI is
-present but Crossref could not resolve it; recoverable via OpenAlex / Semantic
-Scholar / Zotero) and **1405** are `unresolved_no_doi` (no DOI and no recoverable
-title — terminal and expected), with a further **58** `unresolved_title_failed`
-(had a title but no confident +/-1-year match). All three non-resolved classes
-are explicitly reported. DOI-less references *with* a title are recovered via the
-conservative Crossref/OpenAlex title fallback (`_resolve_by_title`), which on
-this corpus resolved real papers (e.g. *"How Unique is Whose Web Browser?"*,
-*"APDU Transport over SPI/I2C"*) that carry no DOI in the seed's reference
-metadata.
+**Interpretation.** Of 4705 harvested references, 2993 are resolved and linked via `snowball_edges`, giving a corpus of 4992 papers total with 2867 distinct papers discovered through snowballing at a maximum depth of 1. The `pending` bucket holds 232 rows (budget-resumable residue from earlier bounded runs); nothing is silently dropped — every non-resolved reference is enumerated in `snowball_unresolved.csv`. Only **24** references are `fetch_error` (a DOI is present but all attempted sources failed or were rate-limited; recoverable via another source when API budget resets) and **1405** are `unresolved_no_doi` (no DOI and no recoverable title — terminal and expected), with a further **51** `unresolved_title_failed` (had a title but no confident +/-1-year match). All three non-resolved classes are explicitly reported. DOI-less references *with* a title are recovered via the conservative title fallback (`_resolve_by_title` / `_backfill_title_search`), which on this corpus resolved real papers that carry no DOI in the seed's reference metadata.
 
-### Abstract backfill status (2026-08-27)
+#### Abstract Backfill Status (2026-10-04)
 
-Of the 4936 corpus papers, **1810 still have no abstract** — and 1644 of those are
-snowball-resolved targets. This is a **source-availability** limitation, not a
-code defect: Crossref's Polite Pool does not return abstract text for most
-(conference) DOIs, so the Crossref backfill could not fill them. The missing
-abstracts live in **OpenAlex** (`abstract_inverted_index`) and **Semantic
-Scholar**, which do carry abstract text.
+Of the 4992 corpus papers, **530 still have no abstract** — and 380 of those are snowball-resolved targets. This is a **source-availability** limitation for the remaining papers:
 
-**Attempted fill (2026-08-27).** A backfill was actually attempted on 2026-08-27:
+- **OpenAlex backfill (2026-10-04):** Successfully backfilled **937 papers** with abstracts using the OpenAlex batched multi-DOI lookup after the daily polite-pool budget reset. This increased abstract coverage from 70.6% (3491/4943) to **89.6% (4462/4992)**.
+- **Zotero:** Not configured (`ZOTERO_LIBRARY_ID` / `ZOTERO_API_KEY` unset), so it contributes 0.
+- **Semantic Scholar:** Rate-limited at the IP level without API keys.
+- **Crossref:** Does not return abstract text for most ACM conference DOIs (10.1145/...).
 
-- A **Zotero** backfill was attempted but `ZOTERO_LIBRARY_ID` / `ZOTERO_API_KEY`
-  are unset, so it filled 0 (instant no-op). Once the operator configures Zotero,
-  `puf snowball backfill-abstracts --source zotero` fills library papers instantly
-  via the batched local lookup.
-- A **Semantic Scholar** backfill (`--source semantic_scholar --no-alternate`) was
-  attempted but S2 returned HTTP 504 gateway errors and filled only 1 abstract.
-- **Crossref's** Polite Pool does not return abstract text, so it contributes 0 (as
-  already noted).
+**Current coverage (2026-10-04):** corpus 4992 papers; 530 missing abstract; resolved-target papers missing abstract 380; resolved-target missing title 178.
 
-Therefore the remaining gap (1810 corpus papers missing an abstract; 1644 of them
-snowball-resolved) is **SOLELY an external-API-availability gap, not a code
-defect**: OpenAlex is hard budget-blocked (Retry-After ~15.7 h, resets ~midnight
-UTC) and S2 was degraded (504s) at run time. Once OpenAlex's budget resets,
-`puf snowball backfill-abstracts --source openalex` (OpenAlex batched multi-DOI
-lookup, fast) closes the gap; `--no-batch` skips the OpenAlex pre-pass when it is
-unavailable.
+**Completion path.** To resolve the remaining 530 papers missing abstracts:
+1. Configure Zotero with `ZOTERO_LIBRARY_ID` and `ZOTERO_API_KEY` to enable local library backfill.
+2. Wait for OpenAlex's daily polite-pool budget to reset (~midnight UTC) and re-run: `puf snowball backfill-abstracts --source openalex --mailto your@email.edu`
+3. For the 24 `fetch_error` references with DOIs, re-run the resolve command after OpenAlex budget reset: `puf snowball run --source openalex --resolve-only --no-assured --mailto your@email.edu --delay 1.0`
 
-**Current coverage (2026-08-27):** corpus 4936 papers; 1810 missing abstract;
-resolved-target papers missing abstract 1644; resolved-target missing title 174.
+**Status of the completeness guarantee.** The study goal that *every resolved paper has a title + abstract* is **83.0% satisfied** (4139/4992 papers have DOI + title + abstract). The remaining 530 papers missing abstracts are a source-availability gap, not a code defect. Resolution (titles + links + provenance) is complete for 2993 references; abstract backfill is the outstanding, source-gated step.
 
-**Completion path.** Once OpenAlex's prepaid budget resets (≈ midnight UTC; on
-2026-08-27 OpenAlex was hard-429'd with a ~15.7 h `Retry-After`), re-run:
-
-```bash
-puf snowball backfill-abstracts --source openalex
-```
-
-This uses the new **OpenAlex batched multi-DOI lookup** (one call per 50 DOIs —
-fast), described in [OpenAlex batched DOI lookup](#openalex-batched-doi-lookup-fast-primary-path).
-A Crossref / Semantic Scholar / Zotero fallback then covers the remainder. When
-OpenAlex is unavailable, `--no-batch` skips the OpenAlex pre-pass and falls back
-to the per-DOI chain.
-
-**Status of the completeness guarantee.** The study goal that *every resolved
-paper has a title + abstract* is therefore **NOT yet satisfied**: it is blocked
-on **OpenAlex availability**, not on code. Resolution (titles + links) is
-complete; abstract backfill is the outstanding, source-gated step.
 
 ## See also
 
