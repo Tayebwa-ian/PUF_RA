@@ -30,6 +30,7 @@ import json
 import re
 import sqlite3
 import time
+import unicodedata
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -127,6 +128,74 @@ def _get_json(
             continue
         limiter.note_success()
         return payload
+
+    raise RateLimitError(f"Failed after {attempts} attempts: {url} ({last_error})")
+
+
+def _post_json(
+    url: str,
+    body: dict[str, Any],
+    rate_limiter: Optional[RateLimiter] = None,
+    retries: Optional[int] = None,
+    timeout: float = REQUEST_TIMEOUT,
+    source: Optional[str] = None,
+) -> dict[str, Any]:
+    """POST *body* as JSON to *url* and parse the JSON response with smart pacing.
+
+    Mirrors :func:`_get_json` but issues an HTTP ``POST`` with a JSON body (used
+    by Semantic Scholar's ``/paper/batch`` endpoint). Paces via the shared
+    :class:`RateLimiter`, retries on :data:`RETRYABLE_STATUS` and raises
+    :class:`RateLimitError` once the attempt budget is exhausted.
+
+    Args:
+        url: Absolute URL to fetch.
+        body: JSON-serialisable request body.
+        rate_limiter: Shared limiter; a private default is used when omitted.
+        retries: Override for the limiter's ``max_retries`` attempt budget.
+        timeout: Per-request socket timeout in seconds.
+        source: Source key used for pace/backoff accounting.
+
+    Returns:
+        The parsed JSON object.
+
+    Raises:
+        RateLimitError: If every attempt failed (rate limit or network error).
+        HTTPError: For non-retryable HTTP errors (e.g. 400).
+    """
+    limiter = rate_limiter if rate_limiter is not None else RateLimiter()
+    attempts = limiter.max_retries if retries is None else max(1, int(retries))
+    last_error: Optional[Exception] = None
+
+    payload_bytes = json.dumps(body).encode("utf-8")
+    for attempt in range(attempts):
+        limiter.wait_before_call(source=source)
+        request = Request(
+            url,
+            data=payload_bytes,
+            headers={"User-Agent": USER_AGENT, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code not in RETRYABLE_STATUS:
+                raise
+            wait = limiter.backoff_seconds(attempt, _retry_after_header(exc))
+            print(f"  HTTP {exc.code} from API; backing off {wait:.1f}s")
+            time.sleep(wait)
+            last_error = exc
+            limiter.note_failure()
+            continue
+        except (URLError, TimeoutError, OSError) as exc:
+            wait = limiter.backoff_seconds(attempt, None)
+            print(f"  Request failed ({exc}); retrying in {wait:.1f}s")
+            time.sleep(wait)
+            last_error = exc
+            limiter.note_failure()
+            continue
+        limiter.note_success()
+        return parsed
 
     raise RateLimitError(f"Failed after {attempts} attempts: {url} ({last_error})")
 
@@ -277,6 +346,26 @@ def normalise_title(title: Optional[str]) -> str:
 def _squash_title(title: Optional[str]) -> str:
     """Return a title with *all* whitespace removed, lowercased."""
     return re.sub(r"\s+", "", title or "").lower()
+
+
+def _match_title(title: Optional[str]) -> str:
+    """Return a tolerant matching key for a title.
+
+    Unicode-NFKC-normalised, lowercased, with every character that is not an
+    alphanumeric or whitespace stripped, then whitespace collapsed. This is a
+    *separate* key from :func:`normalise_title` (which only lowercases and
+    collapses whitespace and is used by SQL dedup), so that punctuation, accents
+    and HTML entities no longer prevent fuzzy title matches.
+    """
+    text = unicodedata.normalize("NFKC", title or "")
+    # Decompose any remaining accented letters (NFKC re-composes them) and drop
+    # the combining marks so e.g. "Café" collapses to "cafe".
+    text = "".join(
+        c for c in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(c)
+    )
+    text = re.sub(r"[^0-9a-z\s]", "", text.lower())
+    return " ".join(text.split())
 
 
 def find_existing_paper_id(

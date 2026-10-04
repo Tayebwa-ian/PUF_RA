@@ -1,3 +1,5 @@
 .venv/*
 *__
 *.db*
+.env
+.kilo/kilo.jsonc

@@ -117,6 +117,35 @@ Then copy/split into `ground_truth.csv` for each annotator.
 
 ---
 
+## 5b. The curated working set (`ground_truth_template.csv`)
+
+`data/ground_truth/ground_truth_template.csv` is the **curated working set** used for
+human labeling. Unlike the strict ingest contract `ground_truth.csv` (sec. 3:
+`paper_id,annotator_id,label,confidence,rationale`), this file is a **SUPERSET**: it
+carries the human-friendly, metadata-enriched columns
+
+```csv
+paper_id,DOI,Title,Abstract,annotator_id,label,confidence,rationale
+```
+
+so a second rater can read each paper's DOI, Title and full Abstract inline while
+labeling. It currently holds **50 papers** (each appearing twice -- once per
+annotator), giving a balanced, three-class distribution:
+
+* **17 `in-scope`** (physical attack on a PUF)
+* **17 `out-of-scope`** (e.g. ML / modeling attacks)
+* **16 `hybrid`** (side-channel + ML)
+
+**Annotator A is pre-filled** (label, confidence, rationale already entered for all 50
+papers); **annotator B is left entirely blank** for a second rater to complete
+independently (do not discuss labels beforehand -- see sec. 6). To ingest, split the
+two annotators into the strict `ground_truth.csv` contract (keep only
+`paper_id,annotator_id,label,confidence,rationale`), or label B and then run
+`puf eval groundtruth` on the resulting file (see sec. 4). The extra `DOI` / `Title` /
+`Abstract` columns are ignored by the ingest script (it only reads the sec. 3 columns).
+
+---
+
 ## 6. Do NOT
 
 - Do not change the three label names.

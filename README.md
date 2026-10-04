@@ -14,7 +14,7 @@ co-authors.)
 - **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
 - **LLM screening** — 3-class (in-scope / out-of-scope / hybrid) screening using OpenAI-compatible APIs; emits structured JSONL.
 - **Evaluation harness** — compares deterministic, SBERT, and LLM-prompt screening against a human ground truth (Cohen's/Fleiss' κ, precision/recall/F1, ROC-AUC).
-- **Snowball search (backward + forward)** — Citation-graph expansion in three resumable stages: **harvest** (collect each seed's full reference list) → **resolve** (validate them, extract title/authors/year) → **backfill** (extract abstracts). Backward via Crossref / OpenAlex / Semantic Scholar, forward via OpenAlex `cites:` (needs `--source openalex`); rate-limit resilient — the resolve stage switches source on HTTP 429 and keeps going
+- **Snowball search (backward + forward)** — Citation-graph expansion in three resumable stages: **harvest** (collect each seed's full reference list) → **resolve** (validate them, extract title/authors/year) → **backfill** (extract abstracts via batched Crossref + Semantic Scholar pre-passes, with OpenAlex as a rate-limited extra). Backward via Crossref / OpenAlex / Semantic Scholar, forward via OpenAlex `cites:` (needs `--source openalex`); rate-limit resilient — the resolve stage switches source on HTTP 429 and keeps going
 - **Interactive TUI** — Textual-based terminal UI for browsing and filtering
 
 ## Quick Start
