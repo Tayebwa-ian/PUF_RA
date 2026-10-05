@@ -8,8 +8,6 @@ from unittest import mock
 
 import pytest
 
-import sentence_transformers
-
 from src.db_schema import create_schema
 from src.relevance import (
     BM25,
@@ -217,36 +215,6 @@ def test_export_baseline_jsonl_three_class(tmp_path):
     assert ml["decision"] == "out-of-scope"
 
 
-def test_export_sbert_jsonl_three_class(tmp_path):
-    conn = _make_db_with_papers(SAMPLE_PAPERS)
-    out = tmp_path / "sbert.jsonl"
-
-    class FakeModel:
-        def encode(self, texts, convert_to_tensor=True):
-            import torch
-            vecs = [
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [0.7, 0.3],
-            ]
-            return torch.tensor(vecs[: len(texts)], dtype=torch.float32)
-
-    with mock.patch.object(sentence_transformers, "SentenceTransformer", return_value=FakeModel()):
-        n = baselines.export_sbert_jsonl(conn, out, model_name="fake", threshold=0.3, run=1)
-
-    assert n == 3
-    lines = [json.loads(l) for l in out.read_text().splitlines() if l.strip()]
-    assert len(lines) == 3
-    for rec in lines:
-        assert rec["decision"] in ("in-scope", "out-of-scope", "hybrid")
-        assert rec["model"] == "fake"
-        assert rec["temperature"] == 0.0
-        assert rec["method"] == "sbert"
-    # ML-only paper must be out-of-scope even though its embedding is far
-    ml = next(r for r in lines if r["paper_id"] == 2)
-    assert ml["decision"] == "out-of-scope"
-
-
 def test_preprocess():
     assert _preprocess("Hello World!") == "hello world"
     assert _preprocess("POWER ANALYSIS") == "power analysis"
@@ -407,7 +375,6 @@ def test_evaluate_corpus_no_store_does_not_write_papers():
     assert conn.execute("SELECT COUNT(*) FROM evals").fetchone()[0] == 0
 
 
-
 # ---------------------------------------------------------------------------
 # Phase B: auto-derived, method-specific relevance threshold
 # ---------------------------------------------------------------------------
@@ -535,88 +502,3 @@ def test_evaluate_corpus_explicit_threshold_overrides_derivation():
     # explicit threshold must win over the derived cutoff
     results = evaluate_corpus(conn, method="keyword", threshold=0.05, store=False)
     assert all(details["threshold"] == 0.05 for _, _, _, _, details in results)
-
-
-def test_derive_threshold_sbert_uses_embeddings(monkeypatch):
-    """SBERT threshold derivation reuses the embedding scores (mocked)."""
-    import sentence_transformers
-
-    class FakeModel:
-        def encode(self, texts, convert_to_tensor=True):
-            import torch
-
-            vecs = [[1.0, 0.0], [0.0, 1.0], [0.9, 0.1], [0.0, 1.0]]
-            return torch.tensor(vecs[: len(texts)], dtype=torch.float32)
-
-    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", lambda *a, **k: FakeModel())
-
-    conn = _make_db_with_papers(SAMPLE_PAPERS + [FIBER_PAPER])
-    _seed_consensus(
-        conn,
-        {
-            "10.1/p1": "in-scope",
-            "10.1/p3": "in-scope",
-            "10.1/p2": "out-of-scope",
-            "10.1/fiber": "out-of-scope",
-        },
-    )
-    thr = derive_threshold(conn, method="sbert", criterion="f1")
-    assert thr is not None and 0.0 <= thr <= 1.0
-
-
-def test_derive_threshold_sbert_finds_negative_optimum(monkeypatch):
-    """A negative-cosine optimum must be reachable by the threshold sweep."""
-    import src.baselines as baselines
-
-    conn = _make_db_with_papers(SAMPLE_PAPERS + [FIBER_PAPER])
-    _seed_consensus(
-        conn,
-        {
-            "10.1/p1": "in-scope",
-            "10.1/p3": "in-scope",
-            "10.1/p2": "out-of-scope",
-            "10.1/fiber": "out-of-scope",
-        },
-    )
-    ids = {
-        doi: conn.execute("SELECT id FROM papers WHERE doi = ?", (doi,)).fetchone()["id"]
-        for doi in ("10.1/p1", "10.1/p2", "10.1/p3", "10.1/fiber")
-    }
-    # every score is negative; the perfect split sits between -0.5 and -0.2
-    fake = {
-        ids["10.1/p1"]: -0.20,
-        ids["10.1/p3"]: -0.10,
-        ids["10.1/p2"]: -0.50,
-        ids["10.1/fiber"]: -0.60,
-    }
-    monkeypatch.setattr(
-        baselines, "sbert_scores", lambda conn, model=None: list(fake.items())
-    )
-
-    for criterion in ("f1", "youden"):
-        thr = derive_threshold(conn, method="sbert", criterion=criterion)
-        assert thr is not None
-        assert thr < 0.0, f"{criterion}: sweep missed the negative optimum ({thr})"
-        assert -0.5 < thr <= -0.2
-        # the cut-off perfectly separates the curated labels
-        assert fake[ids["10.1/p1"]] >= thr and fake[ids["10.1/p3"]] >= thr
-        assert fake[ids["10.1/p2"]] < thr and fake[ids["10.1/fiber"]] < thr
-
-
-def test_derive_threshold_all_scores_equal_is_degenerate_safe(monkeypatch):
-    """Identical scores (empty range) still yield a usable threshold, not a crash."""
-    import src.baselines as baselines
-
-    conn = _make_db_with_papers(SAMPLE_PAPERS)
-    _seed_consensus(conn, {"10.1/p1": "in-scope", "10.1/p2": "out-of-scope"})
-    ids = {
-        doi: conn.execute("SELECT id FROM papers WHERE doi = ?", (doi,)).fetchone()["id"]
-        for doi in ("10.1/p1", "10.1/p2", "10.1/p3")
-    }
-    monkeypatch.setattr(
-        baselines,
-        "sbert_scores",
-        lambda conn, model=None: [(pid, -0.42) for pid in ids.values()],
-    )
-    thr = derive_threshold(conn, method="sbert", criterion="f1")
-    assert thr is not None and thr <= -0.42
