@@ -648,3 +648,28 @@ def _migration_5_add_analysis_runs(conn: sqlite3.Connection) -> None:
     in SCHEMA_STATEMENTS) is a no-op.
     """
     conn.execute(CREATE_ANALYSIS_RUNS)
+
+
+CREATE_PAPER_EMBEDDINGS = """
+CREATE TABLE IF NOT EXISTS paper_embeddings (
+    paper_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    embedding_vector TEXT NOT NULL,
+    computed_at TEXT NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (paper_id, model_name),
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+"""
+
+# Add to SCHEMA_STATEMENTS
+SCHEMA_STATEMENTS.append(CREATE_PAPER_EMBEDDINGS)
+
+
+@register_migration(6, "add_paper_embeddings")
+def _migration_6_add_paper_embeddings(conn: sqlite3.Connection) -> None:
+    """Add the paper_embeddings table for storing paper embeddings.
+
+    Idempotent: uses CREATE TABLE IF NOT EXISTS so re-applying migrations over
+    an already-migrated database is a no-op.
+    """
+    conn.execute(CREATE_PAPER_EMBEDDINGS)

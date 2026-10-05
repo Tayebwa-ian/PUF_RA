@@ -327,3 +327,22 @@ CREATE TABLE llm_judge (
     UNIQUE (eval_id, judge_model, judge_prompt_id),
     FOREIGN KEY (eval_id) REFERENCES evals(id) ON DELETE CASCADE
 );
+
+
+-- =====================================================================
+-- 15. PAPER_EMBEDDINGS
+-- =====================================================================
+-- Stores dense vector embeddings for papers to avoid recomputation during
+-- threshold setting and classification. Embeddings are stored per paper and
+-- model, with the embedding_vector stored as a JSON array of floats.
+--
+-- Relationship: N:1 with papers
+-- =====================================================================
+CREATE TABLE paper_embeddings (
+    paper_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    embedding_vector TEXT NOT NULL,    -- JSON array of floats
+    computed_at TEXT NOT NULL DEFAULT current_timestamp,
+    PRIMARY KEY (paper_id, model_name),
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
