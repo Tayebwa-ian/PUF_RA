@@ -82,7 +82,7 @@ gold standard rather than being an ad-hoc query; everything else flows through
 | Evaluation summary | `eval_runs` + `evals` vs `ground_truth_consensus` | Per `eval_run_id`: P/R/F1 (macro), accuracy, Cohen's κ, the scalar ROC-AUC `auc_in_scope` (where a continuous `score` exists), and a 3×3 confusion matrix. Emitted only when both `evals` and `ground_truth_consensus` are non-empty. |
 
 All methods share one `eval_run_id` namespace (`evals.run_id = eval_runs.id`), so
-the deterministic baseline, SBERT, and the 9 LLM configs are directly comparable
+the deterministic baseline, embedding baseline, and the 9 LLM configs are directly comparable
 (see `docs/evaluation.md`).
 
 ## 5. Persisting results

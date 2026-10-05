@@ -11,7 +11,7 @@ attack), or `hybrid` (side-channel + ML) — using an OpenAI-compatible API. It 
 > LLM is a screening aid under evaluation, not a co-author.
 
 These three classes are **shared by every method in the study** — the
-deterministic keyword/BM25/hybrid baseline, the SBERT embedding baseline, and the
+deterministic keyword/BM25/hybrid baseline, the embedding baseline (octen-embedding-8b), and the
 9 LLM configurations all emit them, so their decisions are comparable under one
 `eval_run_id` namespace (`evals.run_id = eval_runs.id`; see
 [`docs/evaluation.md`](evaluation.md) and [`docs/analysis.md`](analysis.md)). The
@@ -79,6 +79,6 @@ table (`run_id`, `paper_id`, `decision`, `criterion`, `justification`, `excerpt`
 `excerpt_verified`, `tokens_used`). The evaluation study uses the newer 3-class
 `evals` / `eval_runs` tables instead.
 
-All evaluation results (baseline, SBERT, LLM) are analysed together via the
+All evaluation results (baseline, embedding, LLM) are analysed together via the
 analyst agent / `/analyze` command — see [`docs/analysis.md`](analysis.md).
 

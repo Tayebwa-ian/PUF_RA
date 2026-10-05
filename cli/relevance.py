@@ -67,25 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Criterion optimised by --derive-threshold (default: max-F1)",
     )
 
-    # Export the SBERT baseline and ingest it as canonical evals
-    sbert_parser = subparsers.add_parser(
-        "sbert", help="Export SBERT baseline -> eval JSONL -> evals"
-    )
-    sbert_parser.add_argument("--model", default="all-MiniLM-L6-v2", help="SBERT model name")
-    sbert_parser.add_argument("--threshold", type=float, default=None, help="Relevance threshold (None=auto-derive)")
-    sbert_parser.add_argument("--out", type=Path, default=None, help="Output JSONL (default data/evals/sbert_<model>_<run>.jsonl)")
-    sbert_parser.add_argument("--run", type=int, default=1)
-    sbert_parser.add_argument(
-        "--criterion", choices=["f1", "youden"], default="f1",
-        help="Criterion optimised when auto-deriving (default: max-F1)",
-    )
-    sbert_parser.add_argument("--db", default="results.db", help="SQLite database path")
-
     derive_parser = subparsers.add_parser(
         "derive-threshold", help="Print the ground-truth-derived threshold per method",
     )
     derive_parser.add_argument(
-        "--method", choices=["keyword", "bm25", "hybrid", "sbert", "all"], default="all",
+        "--method", choices=["keyword", "bm25", "hybrid", "all"], default="all",
         help="Which deterministic baseline method(s) to derive for",
     )
     derive_parser.add_argument(
@@ -114,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         relevant = sum(1 for _, _, is_rel, _rel_class, _ in results if is_rel)
         print(f"Evaluated {len(results)} papers. Relevant: {relevant}, Irrelevant: {len(results) - relevant}")
         if results:
-            print(f"  effective threshold: {results[0][4]["threshold"]:.4f}")
+            print(f"  effective threshold: {results[0][4]['threshold']:.4f}")
 
     elif args.command == "paper":
         with get_connection(args.db) as conn:
@@ -160,39 +146,9 @@ def main(argv: list[str] | None = None) -> int:
             res = eval_store.ingest_eval_file(conn, out)
         print(f"Baseline {args.method}: wrote {n} record(s) to {out}; ingested {res['evals']} eval(s) into run(s)={res['runs']} (threshold={threshold}).")
 
-    elif args.command == "sbert":
-        from src import baselines
-        from src import eval_store
-
-        out = args.out or (Path("data/evals") / f"sbert_{args.model}_{args.run}.jsonl")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        threshold = args.threshold
-        with get_connection(args.db) as conn:
-            if threshold is None:
-                derived = derive_threshold(
-                    conn, method="sbert", sbert_model=args.model, criterion=args.criterion
-                )
-                if derived is not None:
-                    threshold = derived
-                    print(
-                        f"Derived SBERT threshold ({args.criterion}) from ground truth: "
-                        f"{threshold:.4f}"
-                    )
-                else:
-                    threshold = 0.3
-                    print(
-                        "No usable ground truth for SBERT (ground_truth_consensus): "
-                        "using default threshold 0.3."
-                    )
-            n = baselines.export_sbert_jsonl(
-                conn, out, model_name=args.model, threshold=threshold, run=args.run
-            )
-            res = eval_store.ingest_eval_file(conn, out)
-        print(f"SBERT {args.model}: wrote {n} record(s) to {out}; ingested {res['evals']} eval(s) into run(s)={res['runs']} (threshold={threshold}).")
-
     elif args.command == "derive-threshold":
         methods = (
-            ["keyword", "bm25", "hybrid", "sbert"]
+            ["keyword", "bm25", "hybrid"]
             if args.method == "all" else [args.method]
         )
         with get_connection(args.db) as conn:
@@ -201,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                     thr = derive_threshold(
                         conn, method=method, criterion=args.criterion
                     )
-                except Exception as exc:  # e.g. SBERT model unavailable
+                except Exception as exc:
                     print(f"  {method}: unavailable ({exc})")
                     continue
                 if thr is None:
@@ -215,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     "  --apply: thresholds are auto-derived from "
                     "ground_truth_consensus at evaluation time; evaluate_corpus / "
-                    "baseline / sbert read them directly, so there is nothing to "
+                    "baseline read them directly, so there is nothing to "
                     "persist."
                 )
 

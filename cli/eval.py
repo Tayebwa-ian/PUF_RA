@@ -6,7 +6,7 @@ Subcommands:
   metrics       Compute per-method metrics vs the consensus gold standard.
   runs          List eval runs.
   export-papers Write a fill-in sheet (paper_id, doi, title, ...) for annotators.
-  baseline      Export a deterministic / SBERT baseline as eval JSONL.
+  baseline      Export a deterministic / embedding baseline as eval JSONL.
   screen        Run LLM screening and write eval JSONL (requires API access).
 """
 
@@ -49,10 +49,10 @@ def main(argv: list[str] | None = None) -> int:
     exp_p.add_argument("--db", default="results.db", help="SQLite database path")
 
     base_p = sub.add_parser("baseline", help="Export a baseline as eval JSONL")
-    base_p.add_argument("--method", choices=["keyword", "bm25", "hybrid", "sbert"], required=True)
+    base_p.add_argument("--method", choices=["keyword", "bm25", "hybrid", "embedding"], required=True)
     base_p.add_argument("--out", type=Path, required=True, help="Output JSONL path")
     base_p.add_argument("--threshold", type=float, default=0.15)
-    base_p.add_argument("--model", default="all-MiniLM-L6-v2", help="SBERT model name")
+    base_p.add_argument("--api-key", help="API key for the embedding baseline (octen-embedding-8b)")
     base_p.add_argument("--db", default="results.db", help="SQLite database path")
 
     screen_p = sub.add_parser("screen", help="Run LLM screening -> eval JSONL")
@@ -101,8 +101,8 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.command == "baseline":
         with get_connection(args.db) as conn:
-            if args.method == "sbert":
-                n = baselines.export_sbert_jsonl(conn, args.out, model_name=args.model, threshold=args.threshold)
+            if args.method == "embedding":
+                n = baselines.export_embedding_jsonl(conn, args.out, model_name="octen-embedding-8b", threshold=args.threshold, api_key=args.api_key)
             else:
                 n = baselines.export_baseline_jsonl(
                     conn, args.out, method=args.method, threshold=args.threshold

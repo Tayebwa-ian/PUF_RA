@@ -18,7 +18,7 @@ attacks on PUFs. It is the study protocol; follow it *before* tuning anything.
 - **RQ2** — Which prompt design (P1 zero-shot / P2 rubric / P3 few-shot) yields
   the highest agreement?
 - **RQ3** — Which LLM (3 models, configurable) is most reliable?
-- **RQ4** — Does an embedding (SBERT) baseline help where keyword/BM25 fails
+- **RQ4** — Does an embedding baseline help where keyword/BM25 fails
   (e.g. paraphrase, hybrid cases)?
 - **RQ5** — What are the cost / reproducibility trade-offs, and do LLM judges
   exhibit bias on this task?
@@ -26,20 +26,23 @@ attacks on PUFs. It is the study protocol; follow it *before* tuning anything.
 ## 2. Design
 
 **Methods compared (factorial) — all emit the same 3-class labels.**
-Every method (the deterministic keyword/BM25/hybrid baseline, the SBERT
-embedding baseline, and the 9 LLM configurations) assigns each paper one of the
-three classes `in-scope` / `out-of-scope` / `hybrid`, so metrics are directly
-comparable. **Hybrid rule:** a paper that combines a *physical* side-channel
-measurement *with* ML/modeling (e.g. power/EM traces fed to an ML model) is
-labelled `hybrid`; a pure ML/modeling CRP attack stays `out-of-scope`, and a
-pure physical attack is `in-scope`.
+Every method (the deterministic keyword/BM25/hybrid baseline, the embedding
+baseline using the Uni Passau octen-embedding-8b API, and the 9 LLM
+configurations) assigns each paper one of the three classes `in-scope` /
+`out-of-scope` / `hybrid`, so metrics are directly comparable. **Hybrid rule:**
+a paper that combines a *physical* side-channel measurement *with* ML/modeling
+(e.g. power/EM traces fed to an ML model) is labelled `hybrid`; a pure
+ML/modeling CRP attack stays `out-of-scope`, and a pure physical attack is
+`in-scope`.
 
-- Deterministic baseline: `keyword`, `bm25`, `hybrid` (`src/relevance.py`). **Thresholds are auto-generated and applied** once `ground_truth_consensus` is populated: `evaluate_corpus`, `puf relevance baseline` and `puf relevance sbert` derive the per-method cut-off (max-F1 / Youden) via `src.relevance.derive_threshold(conn, method, criterion="f1"|"youden")` automatically and use it, falling back to the configurable `0.15` default (`0.3` for SBERT) only when no consensus labels exist (inspect with `puf relevance derive-threshold --method all`). The 9 LLM configurations are **threshold-free** — they return the 3-class decision directly from the prompt. Baseline decisions are written into `evals` via `eval_store`.
-- **SBERT embedding baseline — first-class, non-optional.** Its dependencies
-  are installed; `puf relevance sbert` runs it, emits 3-class decisions, and
-  ingests them into `eval_runs` / `evals` (method `sbert`, `eval_runs.model` =
-  the embedding model actually used, default `all-MiniLM-L6-v2`). It is a
-  required comparison point, not an optional extra.
+- Deterministic baseline: `keyword`, `bm25`, `hybrid` (`src/relevance.py`). **Thresholds are auto-generated and applied** once `ground_truth_consensus` is populated: `evaluate_corpus`, `puf relevance baseline` and `puf eval baseline --method embedding` derive the per-method cut-off (max-F1 / Youden) via `src.relevance.derive_threshold(conn, method, criterion="f1"|"youden")` automatically and use it, falling back to the configurable `0.15` default (`0.3` for embedding) only when no consensus labels exist (inspect with `puf relevance derive-threshold --method all`). The 9 LLM configurations are **threshold-free** — they return the 3-class decision directly from the prompt. Baseline decisions are written into `evals` via `eval_store`.
+- **Embedding baseline — first-class method.** Uses the Uni Passau-hosted
+  `octen-embedding-8b` model via the OpenAI-compatible API endpoint
+  `https://llms.innkube.fim.uni-passau.de/v1/embeddings`. `puf eval baseline --method embedding` runs it, emits 3-class decisions, and
+  ingests them into `eval_runs` / `evals` (method `embedding`, `eval_runs.model` =
+  `octen-embedding-8b`). It is a
+  required comparison point.
+- **Uni Passau octen-embedding-8b API approach — primary method for paper embeddings storage.** Uses a hosted embedding API from Uni Passau to avoid local `sentence-transformers`, `torch`, or `loky` multiprocessing issues in Python 3.14. The API endpoint is `https://llms.innkube.fim.uni-passau.de/v1/embeddings` with model `octen-embedding-8b`. Embeddings are stored in the `paper_embeddings` table to avoid recomputation during threshold setting and classification. See `src/embeddings.py` for `get_or_compute_embedding`.
 - **9 LLM configurations = 3 prompts (P1/P2/P3) × 3 LLMs**, configured in
   `config/eval_models.json` (no hard-coded model ids in source).
 
@@ -84,17 +87,17 @@ Tables (see `database_struct.sql` / `src/db_schema.py`):
 - `eval_runs` (method/model/prompt/temp/repetition — idempotent key),
   `evals` (per-paper 3-class decision + score).
 - `llm_judge` (optional LLM-as-judge quality scores).
+- `paper_embeddings` (paper embeddings storage: `paper_id`, `model_name`,
+  `embedding_vector` [JSON array of floats], `computed_at`).
 
 **Contract — `eval_runs.id` is the canonical `eval_run_id`.** It is the single
 source of truth for a run:
-- *Every* method's decisions (keyword, BM25, hybrid baseline, SBERT, and all 9
-  LLM configs) live in `evals`, keyed by `evals.run_id = eval_runs.id`. There is
-  one row per `(run_id, paper_id)`.
+- *Every* method's decisions (keyword, BM25, hybrid baseline, embedding, and all 9 LLM configs) live in `evals`, keyed by `evals.run_id = eval_runs.id`. There is one row per `(run_id, paper_id)`.
 - `relevance_evals` is **only** a raw-score detail (per-method continuous
   scores for the deterministic baselines) — it is *not* where run identity or
   the authoritative 3-class decisions live. Query `evals` + `eval_runs` for any
   cross-method comparison.
-- This is what makes the SBERT, deterministic, and LLM results directly
+- This is what makes the embedding, deterministic, and LLM results directly
   comparable under one `eval_run_id` namespace.
 
 Analysis of these results (plots, distributions, per-run metrics) is described in
@@ -111,7 +114,7 @@ For each `eval_runs` row vs the consensus gold standard (`src/eval_store.compute
   per-run plot is the 3×3 confusion matrix — `analysis.plot_confusion`).
 - **Threshold derivation** for the deterministic baselines: max-F1 / Youden sweep
   vs `ground_truth_consensus` (`src.relevance.derive_threshold`), now applied
-  **automatically** by `evaluate` / `baseline` / `sbert` once curated labels exist;
+  **automatically** by `evaluate` / `baseline` / `embedding` once curated labels exist;
   the LLM methods skip it (threshold-free). Reproducibility (`temperature=0`, ≥3
   runs) is unchanged.
 - Paired comparisons: **McNemar's test**, **bootstrap CIs**, **Holm–Bonferroni**
@@ -149,7 +152,7 @@ puf eval groundtruth data/ground_truth/ground_truth.csv   # reports κ
 
 # 3. Baselines -> JSONL -> DB
 puf eval baseline --method hybrid --out data/evals/baseline_hybrid.jsonl
-puf eval baseline --method sbert  --out data/evals/sbert.jsonl
+puf eval baseline --method embedding --out data/evals/embedding.jsonl
 puf eval ingest data/evals/*.jsonl
 
 # 4. LLM prompts (needs API) -> JSONL -> DB

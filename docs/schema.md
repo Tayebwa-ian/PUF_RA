@@ -185,7 +185,7 @@ Recomputed on every ground-truth ingest (see `src/eval_store.ingest_ground_truth
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | id | INTEGER | PK, AUTOINCREMENT | Primary key |
-| method | TEXT | NOT NULL | 'baseline_keyword' \| 'baseline_bm25' \| 'baseline_hybrid' \| 'sbert' \| 'llm' |
+| method | TEXT | NOT NULL | 'baseline_keyword' \| 'baseline_bm25' \| 'baseline_hybrid' \| 'embedding' \| 'llm' |
 | model | TEXT | NOT NULL | Model id, or 'deterministic' |
 | model_version | TEXT | NOT NULL DEFAULT '' | Model version string |
 | prompt_id | TEXT | NOT NULL DEFAULT '' | 'P1' \| 'P2' \| 'P3' \| 'n/a' |

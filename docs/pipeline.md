@@ -10,7 +10,7 @@ The pipeline supports:
 1. **Multi-source import** — BibTeX/CSV from ACM, IEEE, Springer, Semantic Scholar
 2. **Deduplication** — DOI-based unique constraint prevents duplicates
 3. **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
-4. **LLM screening & evaluation harness** — 3-class (in-scope/out-of-scope/hybrid) screening with OpenAI-compatible APIs, plus a comparison harness that scores deterministic, embedding (SBERT), and LLM-prompt methods against a human ground truth.
+4. **LLM screening & evaluation harness** — 3-class (in-scope/out-of-scope/hybrid) screening with OpenAI-compatible APIs, plus a comparison harness that scores deterministic, embedding, and LLM-prompt methods against a human ground truth.
 5. **Snowball search (backward *and* forward)** — The original collect → validate → extract flow, implemented as three separable stages: **harvest** (collect each seed's full reference list) → **resolve** (validate every stored reference, extract DOI/title/authors/year) → **backfill** (extract the abstracts). Backward works on Crossref / OpenAlex / Semantic Scholar; forward uses OpenAlex `filter=cites:` and therefore requires `--source openalex`.
 6. **TUI** — Interactive terminal UI for browsing, filtering, and managing the corpus
 
@@ -104,7 +104,7 @@ OpenAlex is unavailable / budget-blocked). For `backfill_abstracts` specifically
 Evaluation storage & analysis. Ingests eval JSONL and ground-truth CSV; computes inter-rater agreement (Cohen's / Fleiss' κ) and consensus; computes per-method metrics (precision/recall/F1, κ, ROC-AUC) vs the gold standard.
 
 ### `src/baselines.py`
-Deterministic (keyword / BM25 / hybrid) and optional SBERT baselines; export their scores as eval JSONL consumable by `eval_store`.
+Deterministic (keyword / BM25 / hybrid) and embedding baselines; export their scores as eval JSONL consumable by `eval_store`.
 
 ### `cli/eval.py`
 Evaluation CLI: `ingest`, `groundtruth`, `metrics`, `runs`, `export-papers`, `baseline`, `screen`.
@@ -133,7 +133,7 @@ BibTeX files
 [src/screening.py] → LLM 3-class decisions → eval JSONL
     │
     ▼
-[src/baselines.py] → deterministic + SBERT 3-class scores → eval JSONL
+[src/baselines.py] → deterministic + embedding 3-class scores → eval JSONL
     │
     ▼
 [src/eval_store.py] → ingest eval JSONL + ground truth → metrics vs consensus

@@ -13,7 +13,7 @@ Every method emits the study's three classes (``in-scope`` / ``out-of-scope`` /
 deterministic and reproducible.
 
 The decision threshold can be derived from the human ground truth with
-:func:`derive_threshold` (max-F1 or Youden's J against
+:func:`derive_threshold` (max-F1 or Youden's J vs
 ``ground_truth_consensus``); otherwise the configurable default (``0.15``)
 applies.
 
@@ -167,7 +167,7 @@ def _classify(abstract: str, score: float, threshold: float) -> str:
       - physical only           -> ``in-scope``
       - ML only (no physical)   -> ``out-of-scope``
       - neither                 -> ``in-scope`` iff score >= threshold else
-                                   ``out-of-scope``
+                                    ``out-of-scope``
     """
     text = _preprocess(abstract or "")
     has_physical = any(p.search(text) for p in _PHYSICAL_ATTACK_PATTERNS)
@@ -339,7 +339,7 @@ def _score_components(
 
     Args:
         conn: SQLite connection.
-        method: Scoring method ('keyword', 'bm25', 'hybrid').
+        method: Scoring method ('keyword', 'bm25', 'hybrid', 'embedding').
         keyword_weight: Weight for the keyword score in hybrid mode.
         bm25_weight: Weight for the BM25 score in hybrid mode.
 
@@ -415,18 +415,18 @@ def derive_threshold(
     step: float = 0.01,
     keyword_weight: float = 0.4,
     bm25_weight: float = 0.6,
-    sbert_model: str = "all-MiniLM-L6-v2",
 ) -> Optional[float]:
     """Derive the decision threshold from the human ground truth.
 
     Sweeps candidate thresholds in ``step`` increments over a grid that covers
-    both the conventional ``[0, 1]`` band and the OBSERVED score range (SBERT
-    cosine similarities may be negative), and keeps the one that maximises
+    both the conventional ``[0, 1]`` band and the OBSERVED score range (cosine
+    similarities may be negative), and keeps the one that maximises
     ``criterion`` against ``ground_truth_consensus``:
 
-    * **positive** — consensus label ``in-scope`` or ``hybrid`` (both involve a
-      physical attack, i.e. the papers the screen must keep),
-    * **negative** — consensus label ``out-of-scope``,
+    * **positive** — consensus label ``in-scope`` (pure physical attack, i.e.
+      the papers the screen must keep),
+    * **negative** — consensus label ``out-of-scope`` or ``hybrid`` (ML/modeling
+    or side-channel + ML, i.e. to be discarded),
     * ``disagree`` rows are skipped (not yet adjudicated).
 
     Scores come from :func:`_scores_for_corpus`, so nothing is written to the
@@ -434,7 +434,7 @@ def derive_threshold(
 
     Args:
         conn: SQLite connection.
-        method: Scoring method ('keyword', 'bm25', 'hybrid', 'sbert').
+        method: Scoring method ('keyword', 'bm25', 'hybrid', 'embedding').
         criterion: ``"f1"`` (max-F1, default) or ``"youden"``
             (max sensitivity + specificity - 1).
         step: Sweep granularity in score units (default ``0.01``).
@@ -464,20 +464,21 @@ def derive_threshold(
     labelled: dict[int, int] = {}
     for row in consensus:
         label = row["consensus_label"]
-        if label in ("in-scope", "hybrid"):
+        if label == "in-scope":
             labelled[int(row["paper_id"])] = 1
-        elif label == "out-of-scope":
+        elif label in ("out-of-scope", "hybrid"):
             labelled[int(row["paper_id"])] = 0
         # 'disagree' (and anything unexpected) is skipped
     if not labelled:
         return None
 
-    if method == "sbert":
-        # SBERT cosine-similarity scores come from sentence-transformers, which
-        # may be unavailable or unweighted by keyword_weight/bm25_weight.
+    if method == "embedding":
+        # Embedding cosine-similarity scores come from the Uni Passau octen-embedding-8b API
         try:
-            from src.baselines import sbert_scores
-            scored = sbert_scores(conn, sbert_model)
+            from src.baselines import embedding_scores
+            import os
+            api_key = os.environ.get("UNIPASSAU_EMBEDDING_API_KEY")
+            scored = embedding_scores(conn, model_name="octen-embedding-8b", api_key=api_key)
         except Exception:
             return None
         scores = dict(scored)
@@ -489,7 +490,7 @@ def derive_threshold(
     if n_pos == 0 or n_neg == 0:
         return None  # a sweep needs both classes
 
-    # The candidate grid must cover the OBSERVED score range: SBERT cosine
+    # The candidate grid must cover the OBSERVED score range: cosine
     # similarities can be negative, so a grid pinned to [0, 1] would never
     # consider a negative optimum. The conventional [0, 1] band (keyword / BM25 /
     # hybrid) is always included, which also keeps the degenerate case (every
@@ -536,7 +537,7 @@ def evaluate_corpus(
 
     Args:
         conn: SQLite connection.
-        method: Scoring method ('keyword', 'bm25', 'hybrid').
+        method: Scoring method ('keyword', 'bm25', 'hybrid', 'embedding').
         keyword_weight: Weight for keyword score in hybrid mode.
         bm25_weight: Weight for BM25 score in hybrid mode.
         threshold: Score threshold used by the fall-back branch of the 3-class
@@ -609,7 +610,7 @@ def evaluate_corpus(
 
     # Canonical ingestion into eval_runs/evals: the deterministic baseline's
     # authoritative 3-class decision lives in evals keyed by eval_runs.id
-    # (the eval_run_id), exactly like SBERT and (later) LLM prompts.
+    # (the eval_run_id), exactly like the embedding baseline and LLM prompts.
     if store:
         records = _baseline_eval_records(results, method, threshold, run)
         eval_store.ingest_eval_records(conn, records)
@@ -634,7 +635,7 @@ def evaluate_paper(
     Args:
         conn: SQLite connection.
         paper_id: ID of the paper to evaluate.
-        method: Scoring method ('keyword', 'bm25', 'hybrid').
+        method: Scoring method ('keyword', 'bm25', 'hybrid', 'embedding').
         keyword_weight: Weight for keyword score in hybrid mode.
         bm25_weight: Weight for BM25 score in hybrid mode.
         threshold: Score threshold used by the fall-back branch of the 3-class

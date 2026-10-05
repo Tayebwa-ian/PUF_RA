@@ -13,9 +13,10 @@ co-authors.)
 - **Deduplication** — DOI-based unique constraint prevents duplicates
 - **Empirical relevance scoring** — Hybrid keyword + BM25 scoring against a curated topic keyword set
 - **LLM screening** — 3-class (in-scope / out-of-scope / hybrid) screening using OpenAI-compatible APIs; emits structured JSONL.
-- **Evaluation harness** — compares deterministic, SBERT, and LLM-prompt screening against a human ground truth (Cohen's/Fleiss' κ, precision/recall/F1, ROC-AUC).
+- **Evaluation harness** — compares deterministic, embedding, and LLM-prompt screening against a human ground truth (Cohen's/Fleiss' κ, precision/recall/F1, ROC-AUC).
 - **Snowball search (backward + forward)** — Citation-graph expansion in three resumable stages: **harvest** (collect each seed's full reference list) → **resolve** (validate them, extract title/authors/year) → **backfill** (extract abstracts via batched Crossref + Semantic Scholar pre-passes, with OpenAlex as a rate-limited extra). Backward via Crossref / OpenAlex / Semantic Scholar, forward via OpenAlex `cites:` (needs `--source openalex`); rate-limit resilient — the resolve stage switches source on HTTP 429 and keeps going
 - **Interactive TUI** — Textual-based terminal UI for browsing and filtering
+- **Embedding storage** — Dense vector embeddings stored systematically in the `paper_embeddings` table (columns: `paper_id`, `model_name`, `embedding_vector` [JSON array of floats], `computed_at`) to avoid recomputation during threshold setting and classification. Primary method: Uni Passau-hosted `octen-embedding-8b` via OpenAI-compatible API.
 
 ## Quick Start
 
@@ -39,6 +40,7 @@ puf eval screen --prompt config/prompts/p2_rubric.txt --model "$MODEL" \
 puf eval export-papers data/ground_truth/ground_truth_template.csv
 puf eval groundtruth data/ground_truth/ground_truth.csv
 puf eval baseline --method hybrid --out data/evals/baseline_hybrid.jsonl
+puf eval baseline --method embedding --out data/evals/embedding.jsonl
 puf eval ingest data/evals/*.jsonl
 puf eval screen --prompt config/prompts/p2_rubric.txt --model "$MODEL" \
   --api-key "$API_KEY" --base-url "$BASE_URL" --query-ids 3 4 \
@@ -70,7 +72,7 @@ puf eval groundtruth <csv>
 puf eval metrics <run_id>
 puf eval runs
 puf eval export-papers <out.csv>
-puf eval baseline --method <keyword|bm25|hybrid|sbert> --out <jsonl>
+puf eval baseline --method <keyword|bm25|hybrid|embedding> --out <jsonl>
 puf eval screen --prompt <file> --model <name> --api-key <key> --base-url <url> --query-ids <ids> --out <jsonl>
 ```
 
@@ -85,12 +87,13 @@ PUF_RA/
 │   ├── csv_importer.py
 │   ├── db.py
 │   ├── db_schema.py
+│   ├── embeddings.py        # Uni Passau octen-embedding-8b API client and paper_embeddings storage
 │   ├── relevance.py
 │   ├── screening.py
 │   ├── snowball.py           # Shared-helper module (low-level snowball helpers used by reference_store)
 │   ├── reference_store.py    # Two-phase harvest → resolve → backfill (backward + forward)
 │   ├── eval_store.py        # Eval/ground-truth ingest, κ, metrics
-│   └── baselines.py         # Deterministic + SBERT baseline JSONL exporters
+│   └── baselines.py         # Deterministic + embedding baseline JSONL exporters
 ├── cli/                     # CLI entry points
 │   ├── main.py              # Dispatcher: puf <cmd>
 │   ├── import.py
@@ -118,9 +121,9 @@ PUF_RA/
 - `docs/design_decisions.md` — Architectural rationale and tradeoffs
 - `docs/schema.md` — ER diagram and table reference
 - `docs/snowballing.md` — Snowball methodology: harvest → resolve → backfill stages, backward + forward directions, rate-limit resilience, assured retrieval, results
-- `docs/relevance.md` — Relevance engine methodology
+- `docs/relevance.md` — Relevance engine methodology, threshold derivation, embedding approach
 - `docs/llm_screening.md` — LLM screening setup, 3-class prompts, eval JSONL
-- `docs/evaluation.md` — Evaluation study protocol, metrics, reproducibility
+- `docs/evaluation.md` — Evaluation study protocol, metrics, reproducibility, embedding storage architecture
 - `docs/ground_truth_guidelines.md` — Human gold-label contract & format
 - `docs/prompts.md` — Prompt-design rationale & best practices
 - `docs/pipeline.md` — End-to-end data flow

@@ -37,10 +37,10 @@ evaluates is itself the object of study.
   report inter-rater agreement (Cohen's / Fleiss' κ).
 - **Baseline:** deterministic `src/relevance.py` (keyword + BM25); its decision
   threshold is derived from ground truth (max-F1 / Youden), not a fixed `0.15`.
-- **Methods compared:** baseline + an **SBERT embedding baseline** + **9 LLM
+- **Methods compared:** baseline + an **embedding baseline (Uni Passau octen-embedding-8b API)** + **9 LLM
   configs (3 prompts × 3 LLMs)**. LLMs are **configurable** via
   `config/eval_models.json` (open-source likely, others not ruled out); never
-  hard-code a model.
+  hard-code a model. The embedding baseline uses the Uni Passau-hosted `octen-embedding-8b` model via an OpenAI-compatible API endpoint (`https://llms.innkube.fim.uni-passau.de/v1/embeddings`), with embeddings stored in the `paper_embeddings` table to avoid recomputation.
 - **Outputs:** structured **JSONL** (`data/evals/*.jsonl`) with a fixed schema
   (eval_id, paper_id, method, model, prompt_id, decision, score, confidence,
   rationale, temperature, run, timestamp).
