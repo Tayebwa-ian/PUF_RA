@@ -115,7 +115,7 @@ def query_llm(
         model=model_name,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Title: '{title}'\nAbstract: '{abstract}'"},
+            {"role": "user", "content": f"<paper>\n<title>{title}</title>\n<abstract>{abstract}</abstract>\n</paper>"},
         ],
         response_format={"type": "json_object"},
         timeout=timeout,
