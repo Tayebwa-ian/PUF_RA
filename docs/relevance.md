@@ -89,12 +89,14 @@ The `derive_threshold` function:
 
 ### Derived Thresholds for Hybrid Method (keyword+BM25)
 
-Based on 50 ground truth consensus rows:
+Based on 50 ground truth consensus rows (in-scope: 16, out-of-scope: 17, hybrid: 17), with the mapping where positive = `in-scope` and negative = `out-of-scope` ∪ `hybrid`:
 
-- **max-F1 threshold**: `0.0`
+- **max-F1 threshold**: `0.29`
 - **Youden's J threshold**: `0.55`
 
-These thresholds are derived from `ground_truth_consensus` using max-F1 or Youden's J optimization. The positive class is `in-scope` or `hybrid` (papers with physical attacks that must be kept), and the negative class is `out-of-scope` (ML/modeling attacks). `disagree` rows are skipped.
+These thresholds are derived from `ground_truth_consensus` using max-F1 or Youden's J optimization. The positive class is `in-scope` (pure physical attack, i.e., the papers the screen must keep), and the negative class is `out-of-scope` or `hybrid` (ML/modeling or side-channel + ML, i.e., to be discarded). `disagree` rows are skipped.
+
+**Recommendation:** Use the **Youden's J threshold of `0.55`** as the primary recommended threshold for the hybrid method, as it provides a better balance between true positives and true negatives. Alternatively, the F1 threshold of `0.29` may be used if the goal is to maximize the harmonic mean of precision and recall while ensuring a reasonable number of positive predictions are made.
 
 ### Derived Thresholds for Embedding Baseline (octen-embedding-8b)
 
@@ -144,8 +146,8 @@ Curated from domain expertise, organised by category:
    curated labels is the one applied to the corpus. The sweep covers the `[0, 1]`
    band **and** the observed score range (cosine similarities may be negative or
    values outside the `[0, 1]` band) and maximises F1 (or
-   sensitivity+specificity−1) against `ground_truth_consensus`, with `in-scope`/`hybrid`
-   as positives, `out-of-scope` as negatives and `disagree`
+   sensitivity+specificity−1) against `ground_truth_consensus`, with `in-scope`
+   as positives, `out-of-scope`/`hybrid` as negatives and `disagree`
    skipped. It returns
    `None` (→ keep the default `0.15` for keyword/BM25/hybrid methods, `0.3` for embedding)
    when there is no usable ground truth, and it never writes to
