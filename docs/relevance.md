@@ -79,10 +79,10 @@ The `derive_threshold` function:
 2. Builds a candidate threshold grid that covers the **OBSERVED score range** (since cosine scores may be negative or outside the `[0, 1]` band, the grid is dynamically generated based on the min/max observed scores).
 3. Evaluates each candidate threshold against the `ground_truth_consensus` labels to find the optimal one.
 
-**Threshold derivation details for deterministic baselines (keyword/bm25/hybrid):**
+### Threshold derivation details for deterministic baselines (keyword/bm25/hybrid):
 - The threshold is derived from `ground_truth_consensus` using max-F1 or Youden's J optimization.
-- **Positive class**: `in-scope` or `hybrid` (papers with physical attacks that must be kept).
-- **Negative class**: `out-of-scope` (ML/modeling attacks).
+- **Positive class**: `in-scope` (pure physical attack, i.e., the papers the screen must keep).
+- **Negative class**: `out-of-scope` or `hybrid` (ML/modeling or side-channel + ML, i.e., to be discarded).
 - **Disagree rows**: `disagree` rows are skipped (not yet adjudicated).
 - **Candidate threshold grid**: Covers both the conventional `[0, 1]` band and the observed score range.
 - **Fallback threshold**: `0.15` when no usable ground truth exists.
