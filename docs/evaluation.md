@@ -107,7 +107,7 @@ server.
 ## 6. Metrics & statistics
 
 For each `eval_runs` row vs the consensus gold standard (`src/eval_store.compute_metrics`):
-- Per-class **Precision / Recall / F1** (macro), overall **accuracy**.
+- Per-class **Precision / Recall / F1** (macro), overall **accuracy**. Per-class metrics are computed for both the 2-class mapping (keep vs. discard: `in-scope` positive vs. `out-of-scope`∪`hybrid` negative) and the 3-class labels (`in-scope`, `out-of-scope`, `hybrid`).
 - **Cohen's κ** between method decisions and consensus.
 - **ROC-AUC** (binary, `in-scope` positive) where a continuous `score` exists,
   reported as the scalar `auc_in_scope` (no per-threshold curve is stored, so the

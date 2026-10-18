@@ -24,12 +24,12 @@ Cohen's Kappa is the selected metric for evaluating inter-rater agreement in thi
 
 ## Results and Consensus Distribution
 
-The final ground truth dataset consists of 50 papers with the following consensus distribution:
+The final ground truth dataset consists of 50 papers with the following consensus distribution, reflecting the human annotator inter-rater agreement analysis:
 
 - `in-scope`: 16 papers
 - `out-of-scope`: 17 papers
 - `hybrid`: 17 papers
 
-**Total**: 50 papers
+**Total**: 50 papers stratified across `in-scope` (16), `out-of-scope` (17), and `hybrid` (17).
 
 The aggregated labels are stored in the `ground_truth_consensus` database table. This table contains the `consensus_label` column, which records the final classification as 'in-scope', 'out-of-scope', or 'hybrid' when the annotators agree, or 'disagree' when the annotators do not reach a consensus. Papers marked as 'disagree' are subsequently resolved through discussion to ensure a definitive ground truth label for each paper in the evaluation pipeline.

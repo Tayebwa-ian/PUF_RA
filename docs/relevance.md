@@ -116,6 +116,12 @@ If no usable ground truth exists (i.e., `ground_truth_consensus` is empty or unu
 
 This fallback is explicitly documented: an explicit `--threshold` argument always overrides the auto-derived threshold, but when `--threshold` is not provided and no consensus labels exist, `0.3` is used for the embedding baseline.
 
+### Bootstrapping for Threshold Stability
+
+To assess the stability of the derived thresholds and avoid overfitting risks associated with a 50-paper curated dataset, we employ a bootstrapping approach with 1,000 iterations to obtain confidence intervals for the max-F1 and Youden's J thresholds, along with per-class metric stability. 
+
+The bootstrapping procedure resamples the 50 ground truth consensus papers with replacement. For each bootstrap sample, thresholds are derived using max-F1 and Youden's J optimization with the mapping: positive = `in-scope`, negative = `out-of-scope` ∪ `hybrid`. This provides a distribution of threshold values and associated per-class metrics (Precision, Recall, F1) that quantify the stability of the decision boundaries under sampling variability. The resulting confidence intervals help ensure that the chosen thresholds (e.g., 0.62 for the embedding baseline, 0.55 for the hybrid method) are robust and not overly sensitive to the specific composition of the 50-paper ground truth set.
+
 ### Topic Keyword Set
 
 Curated from domain expertise, organised by category:

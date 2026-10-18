@@ -142,8 +142,12 @@ _ML_SIGNALS: list[str] = [
     "modeling attack",
     "dnn",
     "neural network",
+    "neural networks",
     "deep learning",
     "ml attack",
+    "machine learning",
+    "artificial intelligence",
+    "ai",
 ]
 
 #: Word-boundary matchers for the two signal families used by :func:`_classify`.

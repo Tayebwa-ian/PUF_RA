@@ -259,7 +259,7 @@ def test_export_embedding_jsonl_three_class(tmp_path):
     mock_paper_emb = [0.6, 0.6, 0.6, 0.6, 0.6]
     
     with mock.patch.object(baselines, '_compute_topic_embedding', return_value=mock_topic_emb):
-        with mock.patch.object(baselines, '_compute_paper_embeddings', return_value={1: mock_paper_emb}):
+        with mock.patch.object(baselines, '_compute_paper_embeddings_batched', return_value={1: mock_paper_emb}):
             n = baselines.export_embedding_jsonl(
                 conn, out, model_name="octen-embedding-8b", threshold=0.3, run=1, api_key="test_key"
             )
