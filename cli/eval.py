@@ -8,6 +8,7 @@ Subcommands:
   export-papers Write a fill-in sheet (paper_id, doi, title, ...) for annotators.
   baseline      Export a deterministic / embedding baseline as eval JSONL.
   screen        Run LLM screening and write eval JSONL (requires API access).
+  judge         Run LLM-as-judge evaluation on an eval run.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 from src.db import get_connection
 from src import eval_store
 from src import baselines
+from src import llm_judge
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,6 +69,14 @@ def main(argv: list[str] | None = None) -> int:
     screen_p.add_argument("--temperature", type=float, default=0.0)
     screen_p.add_argument("--run", type=int, default=1)
     screen_p.add_argument("--dry-run", action="store_true")
+
+    judge_p = sub.add_parser("judge", help="Run LLM-as-judge evaluation on an eval run")
+    judge_p.add_argument("--run-id", type=int, required=True, help="Eval run id to judge")
+    judge_p.add_argument("--judge-model", required=True, help="Judge model identifier")
+    judge_p.add_argument("--judge-prompt", required=True, help="Judge prompt ID")
+    judge_p.add_argument("--api-key", required=True, help="API key for the judge model")
+    judge_p.add_argument("--base-url", required=True, help="OpenAI-compatible base URL for the judge model")
+    judge_p.add_argument("--db", default="results.db", help="SQLite database path")
 
     args = parser.parse_args(argv)
 
@@ -123,6 +133,14 @@ def main(argv: list[str] | None = None) -> int:
                 run=args.run, dry_run=args.dry_run,
             )
         print(f"Wrote {n} eval record(s) to {args.out}")
+
+    elif args.command == "judge":
+        with get_connection(args.db) as conn:
+            n = llm_judge.judge_run_evals(
+                conn, args.run_id, args.judge_model, args.judge_prompt,
+                args.api_key, args.base_url
+            )
+        print(f"Judge evaluations completed: {n} records inserted.")
 
     return 0
 

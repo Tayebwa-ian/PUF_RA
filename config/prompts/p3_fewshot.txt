@@ -33,7 +33,9 @@ Respond with <thinking>...</thinking> followed by a single JSON object (no markd
   "relevance_score": <float 0..1>,
   "confidence": <float 0..1>,
   "techniques": [<short tags>],
-  "rationale": "<one concise sentence>"
+  "rationale": "<clear, specific rationale that cites the decisive evidence from the title/abstract. Do not limit your rationale to a specific length; prioritize completeness and accuracy over brevity.>"
 }
 
 CRITICAL: machine-learning / modeling attacks are OUT OF SCOPE. Never label a pure CRP-modeling paper as "in-scope".
+
+If the abstract is ambiguous or lacks sufficient information to make a confident classification, choose the label you can best defend based on the available evidence, and lower your confidence score accordingly.

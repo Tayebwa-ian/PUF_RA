@@ -7,11 +7,13 @@ Classify a paper's relevance to the topic "Physical attacks on PUFs" into EXACTL
 
 Decide using ONLY the title and abstract. Be precise: a paper that only models a PUF from CRPs is "out-of-scope", NOT "in-scope".
 
-Respond with JSON only, matching this schema exactly:
+If the abstract is ambiguous or lacks sufficient information to make a confident classification, choose the label you can best defend based on the available evidence, and lower your confidence score accordingly.
+
+Return JSON only, strictly matching this schema:
 {
   "decision": "in-scope" | "out-of-scope" | "hybrid",
-  "relevance_score": <float 0..1, degree to which it is a physical attack>,
+  "relevance_score": <float 0..1, your assessed degree of physical-attack relevance>,
   "confidence": <float 0..1>,
-  "techniques": [<short technique tags>],
-  "rationale": "<one sentence>"
+  "techniques": [<short tags, e.g. "power analysis", "ML modeling">],
+  "rationale": "<clear, specific rationale that cites the decisive evidence from the title/abstract. Do not limit your rationale to a specific length; prioritize completeness and accuracy over brevity.>"
 }
