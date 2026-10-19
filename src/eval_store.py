@@ -326,7 +326,8 @@ def compute_metrics(conn: sqlite3.Connection, run_id: int) -> dict[str, Any]:
     """Compute per-method metrics against the consensus gold standard.
 
     Returns accuracy, macro P/R/F1, Cohen's kappa vs consensus, a 3x3 confusion
-    matrix, and a binary ROC-AUC treating `in-scope` as positive.
+    matrix, a binary ROC-AUC treating `in-scope` as positive, and binary
+    classification metrics (include vs exclude).
     """
     consensus = {
         r["paper_id"]: r["consensus_label"]
@@ -376,6 +377,52 @@ def compute_metrics(conn: sqlite3.Connection, run_id: int) -> dict[str, Any]:
     kappa = _cohen_kappa_pairs([(consensus[p], d) for p, d, _ in pairs])
     auc = _roc_auc(y_true_bin, y_score_bin)
 
+    binary_confusion = {
+        "include": {"include": 0, "exclude": 0},
+        "exclude": {"include": 0, "exclude": 0},
+    }
+    
+    tp_bin = 0
+    fp_bin = 0
+    fn_bin = 0
+    tn_bin = 0
+    
+    for paper_id, decision, score in pairs:
+        gold = consensus[paper_id]
+        gold_is_include = (gold == "in-scope")
+        pred_is_include = (decision == "in-scope")
+        
+        if gold_is_include:
+            if pred_is_include:
+                tp_bin += 1
+                binary_confusion["include"]["include"] += 1
+            else:
+                fn_bin += 1
+                binary_confusion["include"]["exclude"] += 1
+        else:
+            if pred_is_include:
+                fp_bin += 1
+                binary_confusion["exclude"]["include"] += 1
+            else:
+                tn_bin += 1
+                binary_confusion["exclude"]["exclude"] += 1
+                
+    binary_accuracy = (tp_bin + tn_bin) / total if total else 0.0
+    binary_precision = tp_bin / (tp_bin + fp_bin) if (tp_bin + fp_bin) else 0.0
+    binary_recall = tp_bin / (tp_bin + fn_bin) if (tp_bin + fn_bin) else 0.0
+    binary_f1 = (
+        2 * binary_precision * binary_recall / (binary_precision + binary_recall)
+        if (binary_precision + binary_recall) else 0.0
+    )
+    
+    binary_pairs = []
+    for p, d, _ in pairs:
+        gold_bin = "include" if consensus[p] == "in-scope" else "exclude"
+        pred_bin = "include" if d == "in-scope" else "exclude"
+        binary_pairs.append((gold_bin, pred_bin))
+    
+    binary_kappa = _cohen_kappa_binary(binary_pairs)
+
     return {
         "run_id": run_id,
         "n": total,
@@ -387,6 +434,12 @@ def compute_metrics(conn: sqlite3.Connection, run_id: int) -> dict[str, Any]:
         "kappa": kappa,
         "auc_in_scope": auc,
         "confusion": confusion,
+        "binary_confusion": binary_confusion,
+        "binary_accuracy": binary_accuracy,
+        "binary_precision": binary_precision,
+        "binary_recall": binary_recall,
+        "binary_f1": binary_f1,
+        "binary_kappa": binary_kappa,
     }
 
 
@@ -400,6 +453,19 @@ def _cohen_kappa_pairs(pairs: list[tuple[str, str]]) -> Optional[float]:
     p_a = {l: a.count(l) / n for l in LABELS}
     p_b = {l: b.count(l) / n for l in LABELS}
     pe = sum(p_a[l] * p_b[l] for l in LABELS)
+    return _safe_kappa(po, pe)
+
+
+def _cohen_kappa_binary(pairs: list[tuple[str, str]]) -> Optional[float]:
+    if not pairs:
+        return None
+    a = [p[0] for p in pairs]
+    b = [p[1] for p in pairs]
+    n = len(a)
+    po = sum(1 for i in range(n) if a[i] == b[i]) / n
+    p_a = {"include": a.count("include") / n, "exclude": a.count("exclude") / n}
+    p_b = {"include": b.count("include") / n, "exclude": b.count("exclude") / n}
+    pe = sum(p_a[l] * p_b[l] for l in ["include", "exclude"])
     return _safe_kappa(po, pe)
 
 

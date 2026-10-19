@@ -722,7 +722,7 @@ def plot_snowball_status(
 def plot_eval_metrics(
     eval_summary: dict[str, Any], out_dir: str | Path, name: str = "eval_metrics"
 ) -> str:
-    """Grouped bar of macro Precision / Recall / F1 across eval runs."""
+    """Grouped bar of binary metrics across eval runs."""
     runs = eval_summary.get("runs", [])
     if not runs:
         fig, ax = plt.subplots(figsize=(6, 3))
@@ -730,22 +730,24 @@ def plot_eval_metrics(
         return _save(fig, out_dir, name)
 
     labels = [f"run{r['run_id']}:{r['method']}" for r in runs]
-    p = [float(r["metrics"].get("macro_precision", 0.0) or 0.0) for r in runs]
-    rc = [float(r["metrics"].get("macro_recall", 0.0) or 0.0) for r in runs]
-    f1 = [float(r["metrics"].get("macro_f1", 0.0) or 0.0) for r in runs]
+    acc = [float(r["metrics"].get("binary_accuracy", 0.0) or 0.0) for r in runs]
+    p = [float(r["metrics"].get("binary_precision", 0.0) or 0.0) for r in runs]
+    rc = [float(r["metrics"].get("binary_recall", 0.0) or 0.0) for r in runs]
+    f1 = [float(r["metrics"].get("binary_f1", 0.0) or 0.0) for r in runs]
     import numpy as np
 
     x = np.arange(len(labels))
-    width = 0.25
+    width = 0.2
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.bar(x - width, p, width, label="Precision")
-    ax.bar(x, rc, width, label="Recall")
-    ax.bar(x + width, f1, width, label="F1")
+    ax.bar(x - 1.5 * width, acc, width, label="Accuracy")
+    ax.bar(x - 0.5 * width, p, width, label="Precision")
+    ax.bar(x + 0.5 * width, rc, width, label="Recall")
+    ax.bar(x + 1.5 * width, f1, width, label="F1")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
     ax.set_ylim(0, 1)
     ax.set_ylabel("Score")
-    ax.set_title("Per-run macro metrics vs consensus")
+    ax.set_title("Per-run binary metrics vs consensus")
     ax.legend()
     return _save(fig, out_dir, name)
 
@@ -753,44 +755,79 @@ def plot_eval_metrics(
 def plot_confusion(
     eval_summary: dict[str, Any], out_dir: str | Path, name: str = "eval_confusion"
 ) -> str:
-    """Per-run 3x3 confusion-matrix heatmaps (gold consensus vs predicted).
+    """Per-run binary confusion-matrix heatmap (include vs exclude).
 
     This is **not** a ROC curve (it used to be misnamed ``plot_roc``):
-    :func:`eval_store.compute_metrics` exposes a 3x3 confusion matrix and the
+    :func:`eval_store.compute_metrics` exposes a binary confusion matrix and the
     aggregate ``auc_in_scope`` scalar, but not the per-threshold points a ROC
     curve needs, so the confusion matrix is what is rendered — and the file is
     named ``<name>_confusion.png`` accordingly.
     """
-    runs = [r for r in eval_summary.get("runs", []) if "confusion" in r.get("metrics", {})]
+    runs = [r for r in eval_summary.get("runs", []) if "binary_confusion" in r.get("metrics", {})]
     if not runs:
         fig, ax = plt.subplots(figsize=(6, 3))
         ax.text(0.5, 0.5, "no confusion data", ha="center")
         return _save(fig, out_dir, name)
 
-    labels = ["in-scope", "out-of-scope", "hybrid"]
+    labels = ["include", "exclude"]
     n = len(runs)
     cols = min(n, 3)
     rows_n = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows_n, cols, figsize=(4 * cols, 3.5 * rows_n))
+    fig.suptitle("Per-run binary confusion matrix (include vs exclude)", fontsize=12)
     axes = [axes] if n == 1 else axes.flatten()
     for i, r in enumerate(runs):
         ax = axes[i]
-        conf = r["metrics"]["confusion"]
+        conf = r["metrics"]["binary_confusion"]
         matrix = [[int(conf[g][p]) for p in labels] for g in labels]
         im = ax.imshow(matrix, cmap="Blues")
-        ax.set_xticks(range(3))
-        ax.set_yticks(range(3))
+        ax.set_xticks(range(2))
+        ax.set_yticks(range(2))
         ax.set_xticklabels(labels, fontsize=8)
         ax.set_yticklabels(labels, fontsize=8)
         ax.set_xlabel("predicted", fontsize=8)
         ax.set_ylabel("gold", fontsize=8)
         ax.set_title(f"run {r['run_id']}", fontsize=9)
-        for yy in range(3):
-            for xx in range(3):
+        for yy in range(2):
+            for xx in range(2):
                 ax.text(xx, yy, matrix[yy][xx], ha="center", va="center", fontsize=8)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     for j in range(n, len(axes)):
         axes[j].axis("off")
+    return _save(fig, out_dir, name)
+
+
+def plot_auc_metrics(
+    eval_summary: dict[str, Any], out_dir: str | Path, name: str = "eval_auc"
+) -> str:
+    """Bar chart of AUC (in-scope) values across eval runs."""
+    runs = [r for r in eval_summary.get("runs", []) if "auc_in_scope" in r.get("metrics", {})]
+    if not runs:
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.text(0.5, 0.5, "no AUC data", ha="center")
+        return _save(fig, out_dir, name)
+
+    labels = [f"{r['method']}:run{r['run_id']}" for r in runs]
+    auc_values = [float(r["metrics"].get("auc_in_scope", 0.0) or 0.0) for r in runs]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    bars = ax.bar(labels, auc_values)
+    ax.set_xlabel("Method")
+    ax.set_ylabel("AUC (in-scope)")
+    ax.set_title("AUC (in-scope) across eval runs")
+    ax.set_ylim(0, 1)
+
+    for bar, value in zip(bars, auc_values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.01,
+            f"{value:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    plt.xticks(rotation=30, ha="right")
     return _save(fig, out_dir, name)
 
 
@@ -844,6 +881,7 @@ def run_analysis(
     if "evaluation" in kinds and stats.get("evaluation", {}).get("available"):
         plots.append(plot_eval_metrics(stats["evaluation"], out_dir, f"{name}_eval_metrics"))
         plots.append(plot_confusion(stats["evaluation"], out_dir, f"{name}_confusion"))
+        plots.append(plot_auc_metrics(stats["evaluation"], out_dir, f"{name}_auc"))
 
     client.store(name, stats)
 
@@ -871,5 +909,6 @@ __all__ = [
     "plot_snowball_status",
     "plot_eval_metrics",
     "plot_confusion",
+    "plot_auc_metrics",
     "run_analysis",
 ]

@@ -430,6 +430,91 @@ def list_analysis() -> list[dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def get_prewritten_sql_statements(statement_name: Optional[str] = None) -> dict[str, Any]:
+    """Get prewritten SQL statements for the analyst agent.
+    
+    Args:
+        statement_name: Optional name or number of a specific statement to retrieve.
+            If provided, returns only that statement. If not provided,
+            returns all statements.
+            
+    Returns:
+        Dict with either a specific statement or all statements.
+    """
+    md_path = Path("/home/passwd/PUF_RA/docs/prewritten_sql_statements.md")
+    content = md_path.read_text(encoding="utf-8")
+    
+    if statement_name is None:
+        return {"statements": content}
+    
+    # Parse the markdown to find the specific statement
+    lines_md = content.split('\n')
+    result_lines = []
+    in_target_section = False
+    section_found = False
+    
+    # Normalize the statement_name for comparison
+    target_name = statement_name.strip().lower() if statement_name else ""
+    
+    i = 0
+    while i < len(lines_md):
+        line = lines_md[i]
+        
+        # Check for section headers like "## N. Statement Name"
+        if line.startswith('## '):
+            # Extract the section header text
+            header_text = line[3:].strip()
+            
+            # Parse header: "## 1. Corpus by Source" -> num="1", name="Corpus by Source"
+            match_num = re.match(r'^(\d+)\.\s*(.*)', header_text)
+            header_num = None
+            normalized_header = ""
+            if match_num:
+                header_num = match_num.group(1)
+                normalized_header = match_num.group(2).lower()
+            else:
+                normalized_header = header_text.lower()
+            
+            # Determine if this section matches the target
+            match = False
+            # Match by number
+            if target_name == header_num:
+                match = True
+            # Match by full normalized header name
+            elif target_name == normalized_header:
+                match = True
+            # Match by header text lowercased
+            elif target_name == header_text.lower():
+                match = True
+            # Match by removing spaces from both
+            elif target_name.replace(' ', '') == normalized_header.replace(' ', ''):
+                match = True
+            # Match if target_name contains the normalized_header or vice versa
+            elif normalized_header in target_name or target_name in normalized_header:
+                match = True
+                
+            if match:
+                in_target_section = True
+                section_found = True
+                result_lines.append(line)
+            else:
+                if in_target_section:
+                    break
+                in_target_section = False
+        elif in_target_section:
+            # Check if we hit the next section
+            if line.startswith('## '):
+                break
+            result_lines.append(line)
+            
+        i += 1
+        
+    if not section_found:
+        raise ValueError(f"Statement '{statement_name}' not found.")
+        
+    return {"statement": "\n".join(result_lines)}
+
+
 # ---------------------------------------------------------------------------
 # Argument validation helpers
 # ---------------------------------------------------------------------------
@@ -591,7 +676,20 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": "List all stored analyses (id, name, generated_at).",
         "inputSchema": _schema({}, []),
     },
+    {
+        "name": "get_prewritten_sql",
+        "handler": get_prewritten_sql_statements,
+        "description": "Get prewritten SQL statements for the analyst agent",
+        "inputSchema": _schema(
+            {
+                "statement_name": {"type": ["string", "null"], "default": None},
+            },
+            [],
+        ),
+    },
 ]
+
+
 
 TOOL_HANDLERS: dict[str, Callable[..., Any]] = {
     spec["name"]: spec["handler"] for spec in TOOL_SPECS

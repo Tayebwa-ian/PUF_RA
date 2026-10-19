@@ -7,11 +7,12 @@ ground_truth_consensus table.
 
 from __future__ import annotations
 
+import math
 import random
 import sqlite3
 from typing import Any, Optional
 
-from src.relevance import derive_threshold, _classify
+from src.relevance import _scores_for_corpus
 
 
 def bootstrap_threshold_stability(
@@ -62,6 +63,16 @@ def bootstrap_threshold_stability(
     if sample_size is None:
         sample_size = len(labelled_data)
 
+    # Compute scores once using the original connection
+    if method == "embedding":
+        import os
+        api_key = os.environ.get("UNIPASSAU_EMBEDDING_API_KEY")
+        from src.baselines import embedding_scores
+        scored = embedding_scores(conn, model_name="octen-embedding-8b", api_key=api_key)
+        scores_dict = dict(scored)
+    else:
+        scores_dict = dict(_scores_for_corpus(conn, method))
+
     # Resample with replacement
     random.seed(42)  # For reproducibility
 
@@ -83,54 +94,66 @@ def bootstrap_threshold_stability(
         # Convert to list of (paper_id, label)
         unique_bootstrap_list = [(pid, label) for pid, label in unique_bootstrap_data.items()]
 
-        # Create a temporary in-memory database with the bootstrap sample
-        temp_conn = sqlite3.connect(":memory:")
-        temp_conn.row_factory = sqlite3.Row
-
-        # Create the ground_truth_consensus table
-        temp_conn.execute("""
-            CREATE TABLE ground_truth_consensus (
-                paper_id INTEGER NOT NULL PRIMARY KEY,
-                consensus_label TEXT NOT NULL
-                    CHECK (consensus_label IN ('in-scope', 'out-of-scope', 'hybrid', 'disagree')),
-                n_annotators INTEGER NOT NULL,
-                n_agree INTEGER NOT NULL,
-                method TEXT,
-                notes TEXT,
-                created_at TEXT NOT NULL DEFAULT current_timestamp
-            )
-        """)
-
-        # Insert bootstrap sample
+        # Create labelled dict for threshold derivation
+        labelled: dict[int, int] = {}
         for paper_id, label in unique_bootstrap_list:
-            # Map label to consensus_label
-            consensus_label = "in-scope" if label == 1 else "out-of-scope"
-            temp_conn.execute(
-                "INSERT INTO ground_truth_consensus (paper_id, consensus_label, n_annotators, n_agree, method) VALUES (?, ?, 2, 2, 'bootstrap')",
-                (paper_id, consensus_label),
-            )
-        temp_conn.commit()
+            if label == 1:
+                labelled[paper_id] = 1
+            else:
+                labelled[paper_id] = 0
 
-        # Derive thresholds
-        try:
-            f1_threshold = derive_threshold(
-                temp_conn, method=method, criterion="f1", step=step
-            )
-            if f1_threshold is not None:
-                threshold_f1_distribution.append(f1_threshold)
-        except Exception:
-            pass
+        # Compute pairs of (score, y) for the bootstrap sample
+        pairs = [(scores_dict.get(pid, 0.0), y) for pid, y in labelled.items() if pid in scores_dict]
+        n_pos = sum(y for _, y in pairs)
+        n_neg = len(pairs) - n_pos
 
-        try:
-            youden_threshold = derive_threshold(
-                temp_conn, method=method, criterion="youden", step=step
-            )
-            if youden_threshold is not None:
-                threshold_youden_distribution.append(youden_threshold)
-        except Exception:
-            pass
+        if n_pos == 0 or n_neg == 0:
+            continue
 
-        temp_conn.close()
+        # Derive thresholds by sweeping candidate thresholds
+        # The candidate grid must cover the OBSERVED score range
+        observed = [s for s, _ in pairs]
+        start = min(0.0, min(observed) - 1e-3)
+        end = max(1.0, max(observed) + 1e-3)
+        n_steps = max(1, int(math.ceil((end - start) / step)))
+
+        f1_threshold = None
+        best_f1_value = -1.0
+        for i in range(n_steps + 1):
+            t = round(start + i * step, 10)
+            tp = sum(1 for s, y in pairs if s >= t and y == 1)
+            fp = sum(1 for s, y in pairs if s >= t and y == 0)
+            fn = n_pos - tp
+            tn = n_neg - fp
+            precision = tp / (tp + fp) if (tp + fp) else 0.0
+            recall = tp / (tp + fn) if (tp + fn) else 0.0
+            value = (
+                2 * precision * recall / (precision + recall)
+                if (precision + recall)
+                else 0.0
+            )
+            if value > best_f1_value:
+                best_f1_value = value
+                f1_threshold = t
+
+        if f1_threshold is not None:
+            threshold_f1_distribution.append(f1_threshold)
+
+        youden_threshold = None
+        best_youden_value = -1.0
+        for i in range(n_steps + 1):
+            t = round(start + i * step, 10)
+            tp = sum(1 for s, y in pairs if s >= t and y == 1)
+            fp = sum(1 for s, y in pairs if s >= t and y == 0)
+            fn = n_pos - tp
+            tn = n_neg - fp
+            value = tp / n_pos + tn / n_neg - 1.0
+            if value > best_youden_value:
+                best_youden_value = value
+                youden_threshold = t
+
+        if youden_threshold is not None:
+            threshold_youden_distribution.append(youden_threshold)
 
     # Compute 95% CIs
     f1_threshold_ci_95: Optional[tuple[float, float]] = None
@@ -187,8 +210,14 @@ def _compute_per_class_metrics_bootstrap(
         return {}
 
     # Get scores for all papers
-    from src.relevance import _scores_for_corpus
-    scores_dict = dict(_scores_for_corpus(conn, method))
+    if method == "embedding":
+        import os
+        api_key = os.environ.get("UNIPASSAU_EMBEDDING_API_KEY")
+        from src.baselines import embedding_scores
+        scored = embedding_scores(conn, model_name="octen-embedding-8b", api_key=api_key)
+        scores_dict = dict(scored)
+    else:
+        scores_dict = dict(_scores_for_corpus(conn, method))
 
     # Compute metrics for F1 threshold
     f1_metrics = {"precision": [], "recall": [], "f1": []}

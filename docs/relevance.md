@@ -91,8 +91,8 @@ The `derive_threshold` function:
 
 Based on 50 ground truth consensus rows (in-scope: 16, out-of-scope: 17, hybrid: 17), with the mapping where positive = `in-scope` and negative = `out-of-scope` ∪ `hybrid`:
 
-- **max-F1 threshold**: `0.29`
-- **Youden's J threshold**: `0.55`
+- **max-F1 threshold**: `0.29` (95% CI from 1,000 bootstraps: 0.26–0.55)
+- **Youden's J threshold**: `0.55` (95% CI from 1,000 bootstraps: 0.29–0.59)
 
 These thresholds are derived from `ground_truth_consensus` using max-F1 or Youden's J optimization. The positive class is `in-scope` (pure physical attack, i.e., the papers the screen must keep), and the negative class is `out-of-scope` or `hybrid` (ML/modeling or side-channel + ML, i.e., to be discarded). `disagree` rows are skipped.
 
@@ -102,12 +102,12 @@ These thresholds are derived from `ground_truth_consensus` using max-F1 or Youde
 
 Based on 50 ground truth consensus rows (in-scope: 16, out-of-scope: 17, hybrid: 17), with the mapping where positive = `in-scope` and negative = `out-of-scope` ∪ `hybrid`:
 
-- **max-F1 threshold**: `0.62`
-- **Youden's J threshold**: `0.62`
+- **max-F1 threshold**: `0.62` (95% CI from 1,000 bootstraps: 0.56–0.64)
+- **Youden's J threshold**: `0.62` (95% CI from 1,000 bootstraps: 0.56–0.64)
 
 These thresholds are derived from `ground_truth_consensus` using max-F1 or Youden's J optimization on the cosine similarity scores computed between the paper's (title + abstract) embedding and the topic sentence embedding using the `octen-embedding-8b` model. The positive class is `in-scope` (pure physical attack, i.e., the papers the screen must keep), and the negative class is `out-of-scope` or `hybrid` (ML/modeling or side-channel + ML, i.e., to be discarded). `disagree` rows are skipped.
 
-**Recommendation:** Use the threshold of `0.62` for the embedding baseline, as both max-F1 and Youden's J optimization yield the same value, indicating it optimally balances precision/recall and sensitivity/specificity for classifying papers as `in-scope` versus `out-of-scope`/`hybrid`.
+**Recommendation:** Use the threshold of `0.62` for the embedding baseline, as both max-F1 and Youden's J optimization yield the same value, indicating it optimally balances precision/recall and sensitivity/specificity for classifying papers as `in-scope` versus `out-of-scope`/`hybrid`. The tight 95% CI (0.56–0.64) from 1,000 bootstraps indicates high stability of this threshold across different subsamples of the ground truth.
 
 **Fallback threshold:**
 If no usable ground truth exists (i.e., `ground_truth_consensus` is empty or unusable), the system falls back to a configurable default threshold:

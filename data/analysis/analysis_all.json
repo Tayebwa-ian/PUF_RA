@@ -1,0 +1,642 @@
+{
+  "corpus_by_source": [
+    {
+      "source": "snowball",
+      "n_papers": 2801
+    },
+    {
+      "source": "query1:ACM",
+      "n_papers": 1000
+    },
+    {
+      "source": "query2:IEEE",
+      "n_papers": 756
+    },
+    {
+      "source": "query2:ACM",
+      "n_papers": 609
+    },
+    {
+      "source": "query1:IEEE",
+      "n_papers": 418
+    }
+  ],
+  "corpus_by_method": {
+    "per_source": [
+      {
+        "source": "snowball",
+        "n_papers": 2801
+      },
+      {
+        "source": "query1:ACM",
+        "n_papers": 1000
+      },
+      {
+        "source": "query2:IEEE",
+        "n_papers": 756
+      },
+      {
+        "source": "query2:ACM",
+        "n_papers": 609
+      },
+      {
+        "source": "query1:IEEE",
+        "n_papers": 418
+      }
+    ],
+    "by_category": {
+      "snowball": 2801,
+      "database_query": 2783
+    },
+    "counting": "paper-source links: a paper found by multiple methods is counted in each method, so category counts may exceed n_papers_distinct",
+    "by_category_distinct_papers": {
+      "snowball": 2801,
+      "database_query": 2198
+    },
+    "n_papers_distinct": 4992,
+    "n_multi_method_papers": 577
+  },
+  "corpus_by_year": [
+    {
+      "year": 0,
+      "n_papers": 157
+    },
+    {
+      "year": 1854,
+      "n_papers": 1
+    },
+    {
+      "year": 1928,
+      "n_papers": 1
+    },
+    {
+      "year": 1944,
+      "n_papers": 1
+    },
+    {
+      "year": 1948,
+      "n_papers": 1
+    },
+    {
+      "year": 1951,
+      "n_papers": 3
+    },
+    {
+      "year": 1952,
+      "n_papers": 1
+    },
+    {
+      "year": 1953,
+      "n_papers": 1
+    },
+    {
+      "year": 1958,
+      "n_papers": 1
+    },
+    {
+      "year": 1960,
+      "n_papers": 1
+    },
+    {
+      "year": 1962,
+      "n_papers": 1
+    },
+    {
+      "year": 1965,
+      "n_papers": 2
+    },
+    {
+      "year": 1966,
+      "n_papers": 1
+    },
+    {
+      "year": 1970,
+      "n_papers": 1
+    },
+    {
+      "year": 1972,
+      "n_papers": 1
+    },
+    {
+      "year": 1973,
+      "n_papers": 1
+    },
+    {
+      "year": 1975,
+      "n_papers": 3
+    },
+    {
+      "year": 1977,
+      "n_papers": 1
+    },
+    {
+      "year": 1978,
+      "n_papers": 4
+    },
+    {
+      "year": 1979,
+      "n_papers": 2
+    },
+    {
+      "year": 1980,
+      "n_papers": 1
+    },
+    {
+      "year": 1981,
+      "n_papers": 3
+    },
+    {
+      "year": 1982,
+      "n_papers": 1
+    },
+    {
+      "year": 1983,
+      "n_papers": 6
+    },
+    {
+      "year": 1984,
+      "n_papers": 2
+    },
+    {
+      "year": 1985,
+      "n_papers": 2
+    },
+    {
+      "year": 1986,
+      "n_papers": 3
+    },
+    {
+      "year": 1987,
+      "n_papers": 2
+    },
+    {
+      "year": 1988,
+      "n_papers": 2
+    },
+    {
+      "year": 1989,
+      "n_papers": 4
+    },
+    {
+      "year": 1990,
+      "n_papers": 4
+    },
+    {
+      "year": 1991,
+      "n_papers": 3
+    },
+    {
+      "year": 1992,
+      "n_papers": 6
+    },
+    {
+      "year": 1993,
+      "n_papers": 4
+    },
+    {
+      "year": 1995,
+      "n_papers": 5
+    },
+    {
+      "year": 1996,
+      "n_papers": 3
+    },
+    {
+      "year": 1997,
+      "n_papers": 12
+    },
+    {
+      "year": 1998,
+      "n_papers": 10
+    },
+    {
+      "year": 1999,
+      "n_papers": 10
+    },
+    {
+      "year": 2000,
+      "n_papers": 14
+    },
+    {
+      "year": 2001,
+      "n_papers": 14
+    },
+    {
+      "year": 2002,
+      "n_papers": 27
+    },
+    {
+      "year": 2003,
+      "n_papers": 26
+    },
+    {
+      "year": 2004,
+      "n_papers": 24
+    },
+    {
+      "year": 2005,
+      "n_papers": 23
+    },
+    {
+      "year": 2006,
+      "n_papers": 38
+    },
+    {
+      "year": 2007,
+      "n_papers": 40
+    },
+    {
+      "year": 2008,
+      "n_papers": 49
+    },
+    {
+      "year": 2009,
+      "n_papers": 54
+    },
+    {
+      "year": 2010,
+      "n_papers": 69
+    },
+    {
+      "year": 2011,
+      "n_papers": 85
+    },
+    {
+      "year": 2012,
+      "n_papers": 110
+    },
+    {
+      "year": 2013,
+      "n_papers": 113
+    },
+    {
+      "year": 2014,
+      "n_papers": 169
+    },
+    {
+      "year": 2015,
+      "n_papers": 169
+    },
+    {
+      "year": 2016,
+      "n_papers": 198
+    },
+    {
+      "year": 2017,
+      "n_papers": 244
+    },
+    {
+      "year": 2018,
+      "n_papers": 256
+    },
+    {
+      "year": 2019,
+      "n_papers": 345
+    },
+    {
+      "year": 2020,
+      "n_papers": 377
+    },
+    {
+      "year": 2021,
+      "n_papers": 387
+    },
+    {
+      "year": 2022,
+      "n_papers": 419
+    },
+    {
+      "year": 2023,
+      "n_papers": 461
+    },
+    {
+      "year": 2024,
+      "n_papers": 473
+    },
+    {
+      "year": 2025,
+      "n_papers": 395
+    },
+    {
+      "year": 2026,
+      "n_papers": 145
+    }
+  ],
+  "provenance_mix": {
+    "sample_size": 5,
+    "papers": [
+      {
+        "paper_id": 823,
+        "title": "Reverse Engineering and Prevention Techniques for Physical Unclonable Functions Using Side Channels",
+        "sources": [
+          "query1:ACM",
+          "query1:IEEE",
+          "query2:ACM",
+          "query2:IEEE"
+        ],
+        "n_queries": 4,
+        "n_snowball_parents": 0,
+        "n_snowball_children": 0
+      },
+      {
+        "paper_id": 892,
+        "title": "Device aging-based physically unclonable functions",
+        "sources": [
+          "query1:ACM",
+          "query1:IEEE",
+          "query2:ACM",
+          "query2:IEEE"
+        ],
+        "n_queries": 4,
+        "n_snowball_parents": 0,
+        "n_snowball_children": 0
+      },
+      {
+        "paper_id": 89,
+        "title": "Re4PUF: A Reliable, Reconfigurable ReRAM-based PUF Resilient to DNN and Side Channel Attacks",
+        "sources": [
+          "query1:ACM",
+          "query2:ACM",
+          "query2:IEEE"
+        ],
+        "n_queries": 3,
+        "n_snowball_parents": 0,
+        "n_snowball_children": 15
+      },
+      {
+        "paper_id": 368,
+        "title": "Physical Unclonable Functions (PUF) for IoT Devices",
+        "sources": [
+          "query1:ACM",
+          "query2:ACM",
+          "snowball"
+        ],
+        "n_queries": 2,
+        "n_snowball_parents": 1,
+        "n_snowball_children": 0
+      },
+      {
+        "paper_id": 581,
+        "title": "A bus authentication and anti-probing architecture extending hardware trusted computing base off CPU chips and beyond",
+        "sources": [
+          "query1:ACM",
+          "query2:ACM",
+          "query2:IEEE"
+        ],
+        "n_queries": 3,
+        "n_snowball_parents": 0,
+        "n_snowball_children": 0
+      }
+    ]
+  },
+  "relevance_distribution": [
+    {
+      "relevance_class": "out-of-scope",
+      "n_papers": 4400
+    },
+    {
+      "relevance_class": "in-scope",
+      "n_papers": 481
+    },
+    {
+      "relevance_class": "hybrid",
+      "n_papers": 111
+    }
+  ],
+  "snowball_status": {
+    "status_counts": [
+      {
+        "status": "resolved",
+        "n": 2993
+      },
+      {
+        "status": "unresolved_no_doi",
+        "n": 1405
+      },
+      {
+        "status": "pending",
+        "n": 232
+      },
+      {
+        "status": "unresolved_title_failed",
+        "n": 51
+      },
+      {
+        "status": "fetch_error",
+        "n": 24
+      }
+    ],
+    "edges": 2952,
+    "papers_discovered_via_snowball": 2867
+  },
+  "evaluation": {
+    "available": true,
+    "n_runs": 4,
+    "runs": [
+      {
+        "run_id": 1,
+        "method": "embedding",
+        "model": "octen-embedding-8b",
+        "prompt_id": "n/a",
+        "temperature": 0.0,
+        "metrics": {
+          "run_id": 1,
+          "n": 50,
+          "accuracy": 0.86,
+          "macro_precision": 0.8602941176470589,
+          "macro_recall": 0.8615196078431372,
+          "macro_f1": 0.8603683897801545,
+          "per_class": {
+            "in-scope": {
+              "precision": 0.8823529411764706,
+              "recall": 0.9375,
+              "f1": 0.9090909090909091
+            },
+            "out-of-scope": {
+              "precision": 0.875,
+              "recall": 0.8235294117647058,
+              "f1": 0.8484848484848485
+            },
+            "hybrid": {
+              "precision": 0.8235294117647058,
+              "recall": 0.8235294117647058,
+              "f1": 0.8235294117647058
+            }
+          },
+          "kappa": 0.7900419916016796,
+          "auc_in_scope": 0.6746323529411765,
+          "confusion": {
+            "in-scope": {
+              "in-scope": 15,
+              "out-of-scope": 0,
+              "hybrid": 1
+            },
+            "out-of-scope": {
+              "in-scope": 1,
+              "out-of-scope": 14,
+              "hybrid": 2
+            },
+            "hybrid": {
+              "in-scope": 1,
+              "out-of-scope": 2,
+              "hybrid": 14
+            }
+          }
+        }
+      },
+      {
+        "run_id": 2,
+        "method": "baseline_keyword",
+        "model": "deterministic",
+        "prompt_id": "n/a",
+        "temperature": 0.0,
+        "metrics": {
+          "run_id": 2,
+          "n": 50,
+          "accuracy": 0.88,
+          "macro_precision": 0.8811274509803922,
+          "macro_recall": 0.8811274509803922,
+          "macro_f1": 0.8811274509803922,
+          "per_class": {
+            "in-scope": {
+              "precision": 0.9375,
+              "recall": 0.9375,
+              "f1": 0.9375
+            },
+            "out-of-scope": {
+              "precision": 0.8823529411764706,
+              "recall": 0.8823529411764706,
+              "f1": 0.8823529411764706
+            },
+            "hybrid": {
+              "precision": 0.8235294117647058,
+              "recall": 0.8235294117647058,
+              "f1": 0.8235294117647058
+            }
+          },
+          "kappa": 0.8199279711884755,
+          "auc_in_scope": 0.4954044117647059,
+          "confusion": {
+            "in-scope": {
+              "in-scope": 15,
+              "out-of-scope": 0,
+              "hybrid": 1
+            },
+            "out-of-scope": {
+              "in-scope": 0,
+              "out-of-scope": 15,
+              "hybrid": 2
+            },
+            "hybrid": {
+              "in-scope": 1,
+              "out-of-scope": 2,
+              "hybrid": 14
+            }
+          }
+        }
+      },
+      {
+        "run_id": 3,
+        "method": "baseline_bm25",
+        "model": "deterministic",
+        "prompt_id": "n/a",
+        "temperature": 0.0,
+        "metrics": {
+          "run_id": 3,
+          "n": 50,
+          "accuracy": 0.88,
+          "macro_precision": 0.8811274509803922,
+          "macro_recall": 0.8811274509803922,
+          "macro_f1": 0.8811274509803922,
+          "per_class": {
+            "in-scope": {
+              "precision": 0.9375,
+              "recall": 0.9375,
+              "f1": 0.9375
+            },
+            "out-of-scope": {
+              "precision": 0.8823529411764706,
+              "recall": 0.8823529411764706,
+              "f1": 0.8823529411764706
+            },
+            "hybrid": {
+              "precision": 0.8235294117647058,
+              "recall": 0.8235294117647058,
+              "f1": 0.8235294117647058
+            }
+          },
+          "kappa": 0.8199279711884755,
+          "auc_in_scope": 0.7224264705882353,
+          "confusion": {
+            "in-scope": {
+              "in-scope": 15,
+              "out-of-scope": 0,
+              "hybrid": 1
+            },
+            "out-of-scope": {
+              "in-scope": 0,
+              "out-of-scope": 15,
+              "hybrid": 2
+            },
+            "hybrid": {
+              "in-scope": 1,
+              "out-of-scope": 2,
+              "hybrid": 14
+            }
+          }
+        }
+      },
+      {
+        "run_id": 4,
+        "method": "baseline_hybrid",
+        "model": "deterministic",
+        "prompt_id": "n/a",
+        "temperature": 0.0,
+        "metrics": {
+          "run_id": 4,
+          "n": 50,
+          "accuracy": 0.88,
+          "macro_precision": 0.8811274509803922,
+          "macro_recall": 0.8811274509803922,
+          "macro_f1": 0.8811274509803922,
+          "per_class": {
+            "in-scope": {
+              "precision": 0.9375,
+              "recall": 0.9375,
+              "f1": 0.9375
+            },
+            "out-of-scope": {
+              "precision": 0.8823529411764706,
+              "recall": 0.8823529411764706,
+              "f1": 0.8823529411764706
+            },
+            "hybrid": {
+              "precision": 0.8235294117647058,
+              "recall": 0.8235294117647058,
+              "f1": 0.8235294117647058
+            }
+          },
+          "kappa": 0.8199279711884755,
+          "auc_in_scope": 0.6397058823529411,
+          "confusion": {
+            "in-scope": {
+              "in-scope": 15,
+              "out-of-scope": 0,
+              "hybrid": 1
+            },
+            "out-of-scope": {
+              "in-scope": 0,
+              "out-of-scope": 15,
+              "hybrid": 2
+            },
+            "hybrid": {
+              "in-scope": 1,
+              "out-of-scope": 2,
+              "hybrid": 14
+            }
+          }
+        }
+      }
+    ]
+  }
+}
