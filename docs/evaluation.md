@@ -54,16 +54,17 @@ ML/modeling CRP attack stays `out-of-scope`, and a pure physical attack is
 
 ## 3. Prompts (best-practice design)
 
+All LLM prompts are stored in `config/prompts.py` as string constants with XML tags for sections. The three prompt templates are:
+
+- **P1 — zero-shot (`P1_ZERO_SHOT_PROMPT`)**: minimal, just the label definitions + JSON schema.
+- **P2 — rubric (`P2_RUBRIC_PROMPT`)**: precise definition of physical attacks, explicit *ML out of scope* rule, decision rules, JSON schema; the critical rule repeated at the end.
+- **P3 — few-shot + CoT (`P3_FEWSHOT_PROMPT`)**: 3 worked examples (in/out/hybrid) + reasoning, targets the hard borderline cases.
+
+Prompts are accessed via the `get_prompt(prompt_id)` function in `config/prompts.py`, which returns the appropriate template string based on the prompt ID (`p1`, `p2`, or `p3`).
+
 Designed per current prompt-engineering guidance (system/user split, explicit role,
 structured JSON output, few-shot only where the boundary is subtle, recency-bias
-restatement of the critical rule). See `docs/prompts.md` for the rationale and
-`config/prompts/p{1,2,3}*.txt` for the files.
-
-- **P1 — zero-shot:** minimal, just the label definitions + JSON schema.
-- **P2 — rubric:** precise definition of physical attacks, explicit *ML out of
-  scope* rule, decision rules, JSON schema; the critical rule repeated at the end.
-- **P3 — few-shot + CoT:** 3 worked examples (in/out/hybrid) + reasoning,
-  targets the hard borderline cases.
+restatement of the critical rule). See `docs/prompts.md` for the rationale.
 
 ## 4. Output contract
 
@@ -121,14 +122,14 @@ For each `eval_runs` row vs the consensus gold standard (`src/eval_store.compute
   across the 10+ methods.
 - **LLM-as-judge** (optional): pin an *out-of-family* judge model, swap candidate
   order, length-control, and report bias diagnostics (position / verbosity /
-  self-preference). See `docs/prompts.md`.
+  self-preference). See [`docs/llm_judge.md`](llm_judge.md).
 
 ## 7. Reproducibility
 
 - `temperature = 0` (greedy); each configuration run **≥ 3 times**, report mean ±
   variance.
 - Models and prompts are **config-driven** (`config/eval_models.json`,
-  `config/prompts/`) — never hard-coded.
+  `config/prompts.py`) — never hard-coded.
 - The protocol above is fixed up front (pre-registration-style) to avoid post-hoc
   tuning. Log `config_hash` per run.
 
@@ -156,7 +157,7 @@ puf eval baseline --method embedding --out data/evals/embedding.jsonl
 puf eval ingest data/evals/*.jsonl
 
 # 4. LLM prompts (needs API) -> JSONL -> DB
-puf eval screen --prompt config/prompts/p2_rubric.txt --model "$M" \
+puf eval screen --prompt-id P2 --model "$M" \
   --api-key "$KEY" --base-url "$URL" --query-ids 3 4 \
   --out data/evals/llm_p2_${M}.jsonl --prompt-id P2
 puf eval ingest data/evals/*.jsonl

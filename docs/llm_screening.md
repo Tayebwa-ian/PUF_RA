@@ -18,12 +18,28 @@ deterministic keyword/BM25/hybrid baseline, the embedding baseline (octen-embedd
 LLM prompts are one of several screening aids under evaluation, not the only
 path.
 
-## Setup
+## Prompt Management
 
-1. **API endpoint:** Configure via `--base-url`.
-2. **API key:** Pass via `--api-key` (not stored in repo; read from `config/eval_models.json`).
-3. **Model:** Select via `--model` from `config/eval_models.json` (configurable; do not hard-code).
-4. **System prompt:** Use one of `config/prompts/p1_zero_shot.txt`, `p2_rubric.txt`, `p3_fewshot.txt`.
+All LLM prompts are stored in `config/prompts.py` as string constants with XML tags for sections. The three prompt templates are:
+
+- **`P1_ZERO_SHOT_PROMPT`**: Minimal zero-shot prompt with label definitions and JSON schema.
+- **`P2_RUBRIC_PROMPT`**: Rubric-based prompt with precise definitions, explicit "ML out of scope" rule, decision rules, and the critical rule repeated at the end.
+- **`P3_FEWSHOT_PROMPT`**: Few-shot prompt with CoT reasoning and 3 worked examples (in/out/hybrid) targeting hard borderline cases.
+
+Prompts are accessed via the `get_prompt(prompt_id)` function in `config/prompts.py`, which returns the appropriate template string based on the prompt ID (`p1`, `p2`, or `p3`).
+
+## Dynamic Ingestion of Title and Abstract
+
+The LLM screening module dynamically ingests the paper's title and abstract using XML tags. The title and abstract are formatted and passed to the LLM as:
+
+```xml
+<paper>
+<title>{title}</title>
+<abstract>{abstract}</abstract>
+</paper>
+```
+
+This XML structure ensures consistent formatting and clear section demarcation for the model to process.
 
 ## System Prompt Design
 
@@ -47,12 +63,11 @@ subtle (P3), and the critical "ML/modeling is OUT OF SCOPE" rule repeated at the
 
 ```bash
 puf eval screen \
-  --prompt config/prompts/p2_rubric.txt \
+  --prompt-id P2 \
   --model "$MODEL" \
   --api-key "$API_KEY" \
   --base-url "$BASE_URL" \
-  --query-ids 3 4 \
-  --out data/evals/llm_p2_${MODEL}.jsonl \
+  --query-ids 3 4 \n  --out data/evals/llm_p2_${MODEL}.jsonl \
   --prompt-id P2
 ```
 
@@ -81,4 +96,3 @@ table (`run_id`, `paper_id`, `decision`, `criterion`, `justification`, `excerpt`
 
 All evaluation results (baseline, embedding, LLM) are analysed together via the
 analyst agent / `/analyze` command — see [`docs/analysis.md`](analysis.md).
-

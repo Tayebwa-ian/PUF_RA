@@ -24,13 +24,9 @@ import html
 import json
 import re
 import sqlite3
-import textwrap
-from datetime import datetime, timezone
-from typing import Any, Optional
-
-import openai
 
 from src.db import get_connection
+from config.prompts import get_prompt
 from src.eval_store import LABELS
 
 # ---------------------------------------------------------------------------
@@ -266,10 +262,6 @@ def run_screening(
 # ---------------------------------------------------------------------------
 # Eval-mode screening: classify into the 3-class scheme and emit JSONL
 # ---------------------------------------------------------------------------
-
-def load_prompt(path: str | Path) -> str:
-    """Load a system-prompt file (e.g. config/prompts/p2_rubric.txt)."""
-    return Path(path).read_text(encoding="utf-8")
 
 
 def _to_float(value: Any) -> Optional[float]:

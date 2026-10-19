@@ -58,7 +58,6 @@ def main(argv: list[str] | None = None) -> int:
     base_p.add_argument("--db", default="results.db", help="SQLite database path")
 
     screen_p = sub.add_parser("screen", help="Run LLM screening -> eval JSONL")
-    screen_p.add_argument("--prompt", type=Path, required=True, help="System prompt file")
     screen_p.add_argument("--model", required=True, help="Model id")
     screen_p.add_argument("--api-key", required=True, help="API key")
     screen_p.add_argument("--base-url", required=True, help="OpenAI-compatible base URL")
@@ -124,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         from src import screening
 
         client = openai.OpenAI(api_key=args.api_key, base_url=args.base_url)
-        system_prompt = screening.load_prompt(args.prompt)
+        from config.prompts import get_prompt
+        system_prompt = get_prompt(args.prompt_id)
         with get_connection(args.db) as conn:
             n = screening.screen_to_jsonl(
                 conn, client, args.model, system_prompt, args.out,
